@@ -196,3 +196,19 @@ class TestDB2(Validator):
                 "db2": "SELECT LEAST(a, b, c)",
             },
         )
+
+        # Test DATE_STR_TO_DATE conversion (for SQLMesh SEED models)
+        self.validate_all(
+            "SELECT DATE_STR_TO_DATE('2020-01-01')",
+            write={
+                "db2": "SELECT CAST('2020-01-01' AS DATE)",
+            },
+        )
+
+        # Test DATE_STR_TO_DATE with column
+        self.validate_all(
+            "SELECT DATE_STR_TO_DATE(date_string_col)",
+            write={
+                "db2": "SELECT CAST(date_string_col AS DATE)",
+            },
+        )

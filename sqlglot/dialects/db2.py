@@ -6,6 +6,7 @@ from sqlglot import exp, generator, tokens, transforms
 from sqlglot.dialects.dialect import (
     Dialect,
     NormalizationStrategy,
+    datestrtodate_sql,
     max_or_greatest,
     min_or_least,
     rename_func,
@@ -134,6 +135,7 @@ class Db2(Dialect):
             exp.DateSub: _date_add_sql("-"),
             exp.DateDiff: lambda self,
             e: f"{self.func('DAYS', e.this)} - {self.func('DAYS', e.expression)}",
+            exp.DateStrToDate: datestrtodate_sql,
             exp.CurrentDate: lambda self, e: "CURRENT DATE",
             exp.CurrentTimestamp: lambda self, e: "CURRENT TIMESTAMP",
             exp.ILike: no_ilike_sql,
