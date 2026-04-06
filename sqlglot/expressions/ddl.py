@@ -123,6 +123,7 @@ class Describe(Expression):
         "this": True,
         "style": False,
         "kind": False,
+        "properties": False,
         "expressions": False,
         "partition": False,
         "format": False,
@@ -217,6 +218,7 @@ class Show(Expression):
         "for_role": False,
         "into_outfile": False,
         "json": False,
+        "iceberg": False,
     }
 
 
@@ -333,11 +335,13 @@ class Drop(Expression):
         "temporary": False,
         "materialized": False,
         "cascade": False,
+        "restrict": False,
         "constraints": False,
         "purge": False,
         "cluster": False,
         "concurrently": False,
         "sync": False,
+        "iceberg": False,
     }
 
     @property
@@ -374,6 +378,7 @@ class Alter(Expression):
         "not_valid": False,
         "check": False,
         "cascade": False,
+        "iceberg": False,
     }
 
     @property

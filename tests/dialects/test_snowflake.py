@@ -1,6 +1,7 @@
 from unittest import mock
 
 from sqlglot import ParseError, UnsupportedError, exp, parse_one
+from sqlglot.parser import logger as parser_logger
 from sqlglot.optimizer.annotate_types import annotate_types
 from sqlglot.optimizer.normalize_identifiers import normalize_identifiers
 from sqlglot.optimizer.qualify_columns import quote_identifiers
@@ -134,6 +135,7 @@ class TestSnowflake(Validator):
         self.validate_identity("SELECT BOOLOR(1, 0)")
         self.validate_identity("SELECT TO_BOOLEAN('true')")
         self.validate_identity("SELECT TO_BOOLEAN(1)")
+        self.validate_identity("SELECT TO_VARIANT(123)")
         self.validate_identity("SELECT IS_NULL_VALUE(GET_PATH(payload, 'field'))")
         self.validate_identity("SELECT RTRIMMED_LENGTH(' ABCD ')")
         self.validate_identity("SELECT HEX_DECODE_STRING('48656C6C6F')")
@@ -145,6 +147,14 @@ class TestSnowflake(Validator):
         self.validate_identity("SELECT NVL2(col1, col2, col3)")
         self.validate_identity("SELECT NVL(col1, col2)", "SELECT COALESCE(col1, col2)")
         self.validate_identity("SELECT CHR(8364)")
+        self.validate_all(
+            "SELECT CHECK_JSON(x)",
+            read={"snowflake": "SELECT CHECK_JSON(x)"},
+            write={
+                "snowflake": "SELECT CHECK_JSON(x)",
+                "duckdb": "SELECT CASE WHEN x IS NULL OR x = '' OR JSON_VALID(x) THEN NULL ELSE 'Invalid JSON' END",
+            },
+        )
         self.validate_identity('SELECT CHECK_JSON(\'{"key": "value"}\')')
         self.validate_identity(
             "SELECT CHECK_XML('<root><key attribute=\"attr\">value</key></root>')"
@@ -397,12 +407,15 @@ class TestSnowflake(Validator):
 
         expr = self.validate_identity("RIGHT('GAJGSKD', 2)")
         annotated = annotate_types(expr, dialect="snowflake")
-        self.assertEqual(annotated.sql("duckdb"), "RIGHT('GAJGSKD', 2)")
+        self.assertEqual(
+            annotated.sql("duckdb"), "CASE WHEN 2 < 0 THEN '' ELSE RIGHT('GAJGSKD', 2) END"
+        )
 
         expr = self.validate_identity("RIGHT(TO_BINARY('SNOWIKOPN', 'utf-8'), ABS(-3))")
         annotated = annotate_types(expr, dialect="snowflake")
         self.assertEqual(
-            annotated.sql("duckdb"), "UNHEX(RIGHT(HEX(ENCODE('SNOWIKOPN')), ABS(-3) * 2))"
+            annotated.sql("duckdb"),
+            "CASE WHEN ABS(-3) < 0 THEN UNHEX('') ELSE UNHEX(RIGHT(HEX(ENCODE('SNOWIKOPN')), ABS(-3) * 2)) END",
         )
 
         self.validate_all(
@@ -587,6 +600,16 @@ class TestSnowflake(Validator):
         self.validate_identity("SELECT TO_ARRAY(CAST(x AS ARRAY))")
         self.validate_identity("SELECT TO_ARRAY(CAST(['test'] AS VARIANT))")
         self.validate_identity("SELECT ARRAY_UNIQUE_AGG(x)")
+        self.validate_all(
+            "SELECT ARRAY_UNIQUE_AGG(col) FROM t",
+            write={"duckdb": "SELECT LIST(DISTINCT col) FILTER(WHERE NOT col IS NULL) FROM t"},
+        )
+        self.validate_all(
+            "SELECT ARRAY_UNIQUE_AGG(col) OVER (PARTITION BY grp) FROM t",
+            write={
+                "duckdb": "SELECT LIST(DISTINCT col) FILTER(WHERE NOT col IS NULL) OVER (PARTITION BY grp) FROM t"
+            },
+        )
         self.validate_identity("SELECT ARRAY_APPEND([1, 2, 3], 4)")
         self.validate_identity("SELECT ARRAY_CAT([1, 2], [3, 4])")
         self.validate_identity("SELECT ARRAY_PREPEND([2, 3, 4], 1)")
@@ -684,7 +707,7 @@ class TestSnowflake(Validator):
         self.validate_identity("ALTER TABLE a SWAP WITH b")
         self.validate_identity("SELECT MATCH_CONDITION")
         self.validate_identity("SELECT OBJECT_AGG(key, value) FROM tbl")
-        self.validate_identity("1 /* /* */")
+        self.validate_identity("1 /* /* */", "1 /* / * */")
         self.validate_identity("TO_TIMESTAMP(col, fmt)")
         self.validate_identity("SELECT TO_CHAR(CAST('12:05:05' AS TIME))")
         self.validate_identity("SELECT TRIM(COALESCE(TO_CHAR(CAST(c AS TIME)), '')) FROM t")
@@ -694,6 +717,30 @@ class TestSnowflake(Validator):
         self.validate_identity("SELECT GET_PATH(foo, 'bar')")
         self.validate_identity("SELECT a, exclude, b FROM xxx")
         self.validate_identity("SELECT ARRAY_SORT(x, TRUE, FALSE)")
+        self.validate_all(
+            "SELECT ARRAY_SORT(x)",
+            read={"snowflake": "SELECT ARRAY_SORT(x)"},
+            write={
+                "duckdb": "SELECT LIST_SORT(x)",
+                "snowflake": "SELECT ARRAY_SORT(x)",
+            },
+        )
+        self.validate_all(
+            "SELECT ARRAY_SORT(x, FALSE)",
+            read={"snowflake": "SELECT ARRAY_SORT(x, FALSE)"},
+            write={
+                "duckdb": "SELECT LIST_SORT(x, 'DESC', 'NULLS FIRST')",
+                "snowflake": "SELECT ARRAY_SORT(x, FALSE)",
+            },
+        )
+        self.validate_all(
+            "SELECT ARRAY_SORT(x, foo, TRUE)",
+            read={"snowflake": "SELECT ARRAY_SORT(x, foo, TRUE)"},
+            write={
+                "duckdb": "SELECT LIST_SORT(x, foo, 'NULLS FIRST')",
+                "snowflake": "SELECT ARRAY_SORT(x, foo, TRUE)",
+            },
+        )
         self.validate_identity("SELECT BOOLXOR_AGG(col) FROM tbl")
         self.validate_identity(
             "SELECT PERCENTILE_DISC(0.9) WITHIN GROUP (ORDER BY col) OVER (PARTITION BY category)"
@@ -701,15 +748,31 @@ class TestSnowflake(Validator):
         self.validate_identity(
             "SELECT DATEADD(DAY, -7, DATEADD(t.m, 1, CAST('2023-01-03' AS DATE))) FROM (SELECT 'month' AS m) AS t"
         ).selects[0].this.unit.assert_is(exp.Column)
-        self.validate_identity(
-            "SELECT STRTOK('hello world')", "SELECT SPLIT_PART('hello world', ' ', 1)"
+
+        self.validate_all(
+            "SELECT STRTOK('a$b$c', SUBSTRING('.$^', 1, 2), 2)",
+            write={
+                "snowflake": "SELECT STRTOK('a$b$c', SUBSTRING('.$^', 1, 2), 2)",
+                "duckdb": r"""SELECT CASE WHEN SUBSTRING('.$^', 1, 2) = '' AND 'a$b$c' = '' THEN NULL WHEN SUBSTRING('.$^', 1, 2) = '' AND 2 = 1 THEN 'a$b$c' WHEN SUBSTRING('.$^', 1, 2) = '' THEN NULL WHEN 2 < 0 THEN NULL WHEN 'a$b$c' IS NULL OR SUBSTRING('.$^', 1, 2) IS NULL OR 2 IS NULL THEN NULL ELSE LIST_FILTER(REGEXP_SPLIT_TO_ARRAY('a$b$c', CASE WHEN SUBSTRING('.$^', 1, 2) = '' THEN '' ELSE '[' || REGEXP_REPLACE(SUBSTRING('.$^', 1, 2), '([\[\]^.\-*+?(){}|$\\])', '\\\1', 'g') || ']' END), x -> NOT x = '')[2] END""",
+            },
         )
-        self.validate_identity(
-            "SELECT STRTOK('hello world', ' ')", "SELECT SPLIT_PART('hello world', ' ', 1)"
+
+        self.validate_all(
+            "SELECT STRTOK('a$b/cg', '$/.')",
+            write={
+                "snowflake": "SELECT STRTOK('a$b/cg', '$/.', 1)",
+                "duckdb": r"""SELECT CASE WHEN '$/.' = '' AND 'a$b/cg' = '' THEN NULL WHEN '$/.' = '' AND 1 = 1 THEN 'a$b/cg' WHEN '$/.' = '' THEN NULL WHEN 1 < 0 THEN NULL WHEN 'a$b/cg' IS NULL OR '$/.' IS NULL OR 1 IS NULL THEN NULL ELSE LIST_FILTER(REGEXP_SPLIT_TO_ARRAY('a$b/cg', CASE WHEN '$/.' = '' THEN '' ELSE '[' || REGEXP_REPLACE('$/.', '([\[\]^.\-*+?(){}|$\\])', '\\\1', 'g') || ']' END), x -> NOT x = '')[1] END""",
+            },
         )
-        self.validate_identity(
-            "SELECT STRTOK('hello world', ' ', 2)", "SELECT SPLIT_PART('hello world', ' ', 2)"
+
+        self.validate_all(
+            "SELECT STRTOK('ab')",
+            write={
+                "snowflake": "SELECT STRTOK('ab', ' ', 1)",
+                "duckdb": r"""SELECT CASE WHEN ' ' = '' AND 'ab' = '' THEN NULL WHEN ' ' = '' AND 1 = 1 THEN 'ab' WHEN ' ' = '' THEN NULL WHEN 1 < 0 THEN NULL WHEN 'ab' IS NULL OR ' ' IS NULL OR 1 IS NULL THEN NULL ELSE LIST_FILTER(REGEXP_SPLIT_TO_ARRAY('ab', CASE WHEN ' ' = '' THEN '' ELSE '[' || REGEXP_REPLACE(' ', '([\[\]^.\-*+?(){}|$\\])', '\\\1', 'g') || ']' END), x -> NOT x = '')[1] END""",
+            },
         )
+
         self.validate_identity("SELECT FILE_URL FROM DIRECTORY(@mystage) WHERE SIZE > 100000").args[
             "from_"
         ].this.this.assert_is(exp.DirectoryStage).this.assert_is(exp.Var)
@@ -1842,14 +1905,25 @@ class TestSnowflake(Validator):
             },
         )
         self.validate_all(
-            "ARRAY_TO_STRING(x, '')",
-            read={
-                "duckdb": "ARRAY_TO_STRING(x, '')",
-            },
+            "SELECT ARRAY_TO_STRING(x, '')",
             write={
-                "spark": "ARRAY_JOIN(x, '')",
-                "snowflake": "ARRAY_TO_STRING(x, '')",
-                "duckdb": "ARRAY_TO_STRING(x, '')",
+                "spark": "SELECT ARRAY_JOIN(x, '')",
+                "snowflake": "SELECT ARRAY_TO_STRING(x, '')",
+                "duckdb": "SELECT CASE WHEN '' IS NULL THEN NULL ELSE ARRAY_TO_STRING(LIST_TRANSFORM(x, x -> COALESCE(CAST(x AS TEXT), '')), '') END",
+            },
+        )
+        self.validate_all(
+            "SELECT ARRAY_TO_STRING(x, NULL)",
+            write={
+                "snowflake": "SELECT ARRAY_TO_STRING(x, NULL)",
+                "duckdb": "SELECT CASE WHEN NULL IS NULL THEN NULL ELSE ARRAY_TO_STRING(LIST_TRANSFORM(x, x -> COALESCE(CAST(x AS TEXT), '')), NULL) END",
+            },
+        )
+        self.validate_all(
+            "SELECT ARRAY_TO_STRING([], ',')",
+            write={
+                "snowflake": "SELECT ARRAY_TO_STRING([], ',')",
+                "duckdb": "SELECT CASE WHEN ',' IS NULL THEN NULL ELSE ARRAY_TO_STRING(LIST_TRANSFORM([], x -> COALESCE(CAST(x AS TEXT), '')), ',') END",
             },
         )
         self.validate_all(
@@ -1884,9 +1958,27 @@ class TestSnowflake(Validator):
             },
         )
         self.validate_all(
+            "SELECT a RLIKE b",
+            write={
+                "duckdb": "SELECT REGEXP_FULL_MATCH(a, b)",
+                "hive": "SELECT a RLIKE b",
+                "snowflake": "SELECT REGEXP_LIKE(a, b)",
+                "spark": "SELECT a RLIKE b",
+            },
+        )
+        self.validate_all(
+            "SELECT a NOT RLIKE b",
+            write={
+                "duckdb": "SELECT NOT REGEXP_FULL_MATCH(a, b)",
+                "hive": "SELECT NOT a RLIKE b",
+                "snowflake": "SELECT NOT REGEXP_LIKE(a, b)",
+                "spark": "SELECT NOT a RLIKE b",
+            },
+        )
+        self.validate_all(
             "SELECT RLIKE(a, b)",
             write={
-                "duckdb": "SELECT REGEXP_MATCHES(a, '^(' || (b) || ')$')",
+                "duckdb": "SELECT REGEXP_FULL_MATCH(a, b)",
                 "hive": "SELECT a RLIKE b",
                 "snowflake": "SELECT REGEXP_LIKE(a, b)",
                 "spark": "SELECT a RLIKE b",
@@ -1895,13 +1987,14 @@ class TestSnowflake(Validator):
         self.validate_all(
             "SELECT RLIKE(a, b, 'i')",
             write={
-                "duckdb": "SELECT REGEXP_MATCHES(a, '^(' || (b) || ')$', 'i')",
+                "duckdb": "SELECT REGEXP_FULL_MATCH(a, b, 'i')",
                 "snowflake": "SELECT REGEXP_LIKE(a, b, 'i')",
             },
         )
         self.validate_all(
             "'foo' REGEXP 'bar'",
             write={
+                "duckdb": "REGEXP_FULL_MATCH('foo', 'bar')",
                 "snowflake": "REGEXP_LIKE('foo', 'bar')",
                 "postgres": "'foo' ~ 'bar'",
                 "mysql": "REGEXP_LIKE('foo', 'bar')",
@@ -1911,6 +2004,7 @@ class TestSnowflake(Validator):
         self.validate_all(
             "'foo' NOT REGEXP 'bar'",
             write={
+                "duckdb": "NOT REGEXP_FULL_MATCH('foo', 'bar')",
                 "snowflake": "NOT REGEXP_LIKE('foo', 'bar')",
                 "postgres": "NOT 'foo' ~ 'bar'",
                 "mysql": "NOT REGEXP_LIKE('foo', 'bar')",
@@ -3153,6 +3247,56 @@ class TestSnowflake(Validator):
         self.validate_identity("SELECT CURRENT_DATABASE()")
         self.validate_identity("SELECT CURRENT_SCHEMA()")
 
+        self.validate_all(
+            "SELECT 1 WHERE 'abc' ILIKE ANY('%a%')",
+            write={
+                "snowflake": "SELECT 1 WHERE 'abc' ILIKE ANY('%a%')",
+                "duckdb": "SELECT 1 WHERE 'abc' ILIKE '%a%'",
+            },
+        )
+        self.validate_all(
+            "SELECT 1 WHERE 'abc' LIKE ALL ('%a%')",
+            write={
+                "snowflake": "SELECT 1 WHERE 'abc' LIKE ALL ('%a%')",
+                "duckdb": "SELECT 1 WHERE 'abc' LIKE '%a%'",
+            },
+        )
+        self.validate_all(
+            "SELECT 'he%lo' LIKE ANY ('he#%lo', 'hello') ESCAPE '#'",
+            write={
+                "snowflake": "SELECT 'he%lo' LIKE ANY ('he#%lo', 'hello') ESCAPE '#'",
+                "duckdb": "SELECT 'he%lo' LIKE 'he#%lo' ESCAPE '#' OR 'he%lo' LIKE 'hello' ESCAPE '#'",
+            },
+        )
+        self.validate_all(
+            "SELECT 'he%lo' LIKE ALL ('he#%lo', 'he#%lo2') ESCAPE '#'",
+            write={
+                "snowflake": "SELECT 'he%lo' LIKE ALL ('he#%lo', 'he#%lo2') ESCAPE '#'",
+                "duckdb": "SELECT 'he%lo' LIKE 'he#%lo' ESCAPE '#' AND 'he%lo' LIKE 'he#%lo2' ESCAPE '#'",
+            },
+        )
+        self.validate_all(
+            "SELECT 'he%lo' ILIKE ANY ('he#%lo', 'hello') ESCAPE '#'",
+            write={
+                "snowflake": "SELECT 'he%lo' ILIKE ANY ('he#%lo', 'hello') ESCAPE '#'",
+                "duckdb": "SELECT 'he%lo' ILIKE 'he#%lo' ESCAPE '#' OR 'he%lo' ILIKE 'hello' ESCAPE '#'",
+            },
+        )
+        self.validate_all(
+            "SELECT 1 WHERE 'he%lo' LIKE ANY ('he#%lo', 'hello') ESCAPE '#' AND x = 1",
+            write={
+                "snowflake": "SELECT 1 WHERE 'he%lo' LIKE ANY ('he#%lo', 'hello') ESCAPE '#' AND x = 1",
+                "duckdb": "SELECT 1 WHERE ('he%lo' LIKE 'he#%lo' ESCAPE '#' OR 'he%lo' LIKE 'hello' ESCAPE '#') AND x = 1",
+            },
+        )
+        self.validate_all(
+            "SELECT 1 WHERE 'he%lo' LIKE ALL ('he#%lo', 'he#%lo2') ESCAPE '#' OR x = 1",
+            write={
+                "snowflake": "SELECT 1 WHERE 'he%lo' LIKE ALL ('he#%lo', 'he#%lo2') ESCAPE '#' OR x = 1",
+                "duckdb": "SELECT 1 WHERE ('he%lo' LIKE 'he#%lo' ESCAPE '#' AND 'he%lo' LIKE 'he#%lo2' ESCAPE '#') OR x = 1",
+            },
+        )
+
     def test_null_treatment(self):
         self.validate_all(
             r"SELECT FIRST_VALUE(TABLE1.COLUMN1) OVER (PARTITION BY RANDOM_COLUMN1, RANDOM_COLUMN2 ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS MY_ALIAS FROM TABLE1",
@@ -3798,7 +3942,7 @@ class TestSnowflake(Validator):
                 "mysql": "TRUNCATE(3.14159, 2)",
                 "tsql": "ROUND(3.14159, 2, 1)",
                 "bigquery": "TRUNC(3.14159, 2)",
-                "duckdb": "TRUNC(3.14159)",
+                "duckdb": "TRUNC(3.14159, 2)",
                 "presto": "TRUNCATE(3.14159, 2)",
                 "clickhouse": "trunc(3.14159, 2)",
                 "spark": "CAST(3.14159 AS BIGINT)",
@@ -3827,6 +3971,21 @@ class TestSnowflake(Validator):
             },
             write={
                 "snowflake": "TRUNC(price, 2)",
+            },
+        )
+
+        self.validate_all(
+            "TRUNC(4.603, 2)",
+            write={
+                "snowflake": "TRUNC(4.603, 2)",
+                "duckdb": "TRUNC(4.603, 2)",
+            },
+        )
+        self.validate_all(
+            "TRUNC(CAST(4.603 AS DECIMAL(38, 0)), CAST(2 AS DECIMAL(38, 0)))",
+            write={
+                "snowflake": "TRUNC(CAST(4.603 AS DECIMAL(38, 0)), CAST(2 AS DECIMAL(38, 0)))",
+                "duckdb": "TRUNC(CAST(4.603 AS DECIMAL(38, 0)), CAST(CAST(2 AS DECIMAL(38, 0)) AS INT))",
             },
         )
 
@@ -4500,6 +4659,47 @@ FROM persons AS p, LATERAL FLATTEN(input => p.c, path => 'contact') AS _flattene
                 "spark": "DESCRIBE db.table",
             },
         )
+
+        for kind, object_name, prop_type in (
+            ("DYNAMIC TABLE", "db.schema.t1", exp.DynamicProperty),
+            ("MATERIALIZED VIEW", "my_view", exp.MaterializedProperty),
+            ("EXTERNAL VOLUME", "vol1", exp.ExternalProperty),
+            ("COMPUTE POOL", "pool1", exp.ComputeProperty),
+            ("MASKING POLICY", "db.schema.pol1", exp.MaskingProperty),
+            ("ROW ACCESS POLICY", "pol1", exp.RowAccessProperty),
+            ("API INTEGRATION", "int1", exp.ApiProperty),
+            ("APPLICATION PACKAGE", "pkg1", exp.ApplicationProperty),
+            ("SECURITY INTEGRATION", "int1", exp.SecurityIntegrationProperty),
+            ("NETWORK RULE", "rule1", exp.NetworkProperty),
+            ("ICEBERG TABLE", "db.schema.t1", exp.IcebergProperty),
+            ("HYBRID TABLE", "t1", exp.HybridProperty),
+            ("CATALOG INTEGRATION", "int1", exp.CatalogProperty),
+            ("DATABASE ROLE", "role1", exp.DatabaseProperty),
+        ):
+            with self.subTest(kind=kind):
+                ast = self.validate_identity(f"DESCRIBE {kind} {object_name}")
+                self.assertEqual(ast.args["kind"], kind.split()[-1])
+                self.assertIsInstance(ast.find(prop_type), prop_type)
+                self.validate_identity(
+                    f"DESC {kind} {object_name}", f"DESCRIBE {kind} {object_name}"
+                )
+
+        # Verify keyword tokens used by DESCRIBE work as identifiers and aliases
+        from sqlglot import parser
+        from sqlglot.parsers.snowflake import SnowflakeParser
+
+        tokens = {t.name.lower() for t in SnowflakeParser.CREATABLES - parser.Parser.CREATABLES}
+        tokens |= {k.lower() for k in SnowflakeParser.DESCRIBE_QUALIFIER_PARSERS}
+        tokens -= {"row"}  # ROW is not a valid identifier in Snowflake
+
+        for token in sorted(tokens):
+            with self.subTest(token=token):
+                self.validate_identity(f"SELECT {token} FROM t")
+                self.validate_identity(f"SELECT 1 AS {token}")
+
+        cols = ", ".join(f"{t} VARCHAR" for t in sorted(tokens))
+        self.validate_identity(f"CREATE TABLE t ({cols})")
+
         self.validate_all(
             "ENDSWITH('abc', 'c')",
             read={
@@ -5034,9 +5234,51 @@ MATCH_RECOGNIZE (
             "show terse tables in db1.schema1 starts with 'a' limit 10 from 'b'",
             "SHOW TERSE TABLES IN SCHEMA db1.schema1 STARTS WITH 'a' LIMIT 10 FROM 'b'",
         )
+        self.validate_identity(
+            "SHOW ICEBERG TABLES IN db1.schema1",
+            "SHOW ICEBERG TABLES IN SCHEMA db1.schema1",
+        )
+        self.validate_identity(
+            "SHOW TERSE ICEBERG TABLES IN db1.schema1",
+            "SHOW TERSE ICEBERG TABLES IN SCHEMA db1.schema1",
+        )
 
         ast = parse_one("SHOW TABLES IN db1.schema1", read="snowflake")
         self.assertEqual(ast.find(exp.Table).sql(dialect="snowflake"), "db1.schema1")
+        self.assertFalse(ast.args["iceberg"])
+
+        ast = parse_one("SHOW ICEBERG TABLES IN db1.schema1", read="snowflake")
+        self.assertEqual(ast.find(exp.Table).sql(dialect="snowflake"), "db1.schema1")
+        self.assertTrue(ast.args["iceberg"])
+
+        ast = parse_one("SHOW TERSE ICEBERG TABLES IN db1.schema1", read="snowflake")
+        self.assertEqual(ast.find(exp.Table).sql(dialect="snowflake"), "db1.schema1")
+        self.assertTrue(ast.args["terse"])
+        self.assertTrue(ast.args["iceberg"])
+
+    def test_alter_iceberg_table(self):
+        ast = self.validate_identity("ALTER ICEBERG TABLE t RENAME TO x")
+        self.assertTrue(ast.args["iceberg"])
+
+        with mock.patch.object(parser_logger, "warning"):
+            ast = parse_one("ALTER ICEBERG VIEW v RENAME TO x", read="snowflake")
+        self.assertIsInstance(ast, exp.Command)
+
+        self.validate_all(
+            "ALTER ICEBERG TABLE t RENAME TO x",
+            write={
+                "snowflake": "ALTER ICEBERG TABLE t RENAME TO x",
+                "duckdb": "ALTER TABLE t RENAME TO x",
+            },
+        )
+
+    def test_drop_iceberg_table(self):
+        ast = self.validate_identity("DROP ICEBERG TABLE t")
+        self.assertTrue(ast.args["iceberg"])
+        self.validate_identity("DROP ICEBERG TABLE IF EXISTS t")
+        ast = self.validate_identity("DROP ICEBERG TABLE t RESTRICT")
+        self.assertTrue(ast.args["restrict"])
+        self.validate_identity("DROP ICEBERG TABLE IF EXISTS t RESTRICT")
 
     def test_show_primary_keys(self):
         self.validate_identity("SHOW PRIMARY KEYS")
@@ -5177,6 +5419,15 @@ STORAGE_ALLOWED_LOCATIONS=('s3://mybucket1/path1/', 's3://mybucket2/path2/')""",
                 self.assertEqual(
                     expression.sql(dialect="snowflake"), f"SELECT {func}(t.x AS VARCHAR) FROM t"
                 )
+
+    def test_try_parse_json(self):
+        self.validate_all(
+            "SELECT TRY_PARSE_JSON(x)",
+            write={
+                "snowflake": "SELECT TRY_PARSE_JSON(x)",
+                "duckdb": "SELECT CASE WHEN JSON_VALID(x) THEN CAST(x AS JSON) ELSE NULL END",
+            },
+        )
 
     def test_decfloat(self):
         self.validate_all(
@@ -6392,6 +6643,22 @@ FROM SEMANTIC_VIEW(
             write={
                 "snowflake": "SELECT REPEAT(' ', NULL)",
                 "duckdb": "SELECT REPEAT(' ', CAST(NULL AS BIGINT))",
+            },
+        )
+
+    def test_charindex(self):
+        self.validate_all(
+            "SELECT CHARINDEX('sub', 'testsubstring', -1)",
+            write={
+                "snowflake": "SELECT CHARINDEX('sub', 'testsubstring', -1)",
+                "duckdb": "SELECT CASE WHEN STRPOS(SUBSTRING('testsubstring', CASE WHEN -1 <= 0 THEN 1 ELSE -1 END), 'sub') = 0 THEN 0 ELSE STRPOS(SUBSTRING('testsubstring', CASE WHEN -1 <= 0 THEN 1 ELSE -1 END), 'sub') + CASE WHEN -1 <= 0 THEN 1 ELSE -1 END - 1 END",
+            },
+        )
+        self.validate_all(
+            "SELECT CHARINDEX('sub', 'testsubstring', p)",
+            write={
+                "snowflake": "SELECT CHARINDEX('sub', 'testsubstring', p)",
+                "duckdb": "SELECT CASE WHEN STRPOS(SUBSTRING('testsubstring', CASE WHEN p <= 0 THEN 1 ELSE p END), 'sub') = 0 THEN 0 ELSE STRPOS(SUBSTRING('testsubstring', CASE WHEN p <= 0 THEN 1 ELSE p END), 'sub') + CASE WHEN p <= 0 THEN 1 ELSE p END - 1 END",
             },
         )
 

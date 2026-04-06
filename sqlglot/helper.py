@@ -6,14 +6,15 @@ import logging
 import re
 import sys
 import typing as t
-from collections.abc import Collection, Set
+from collections.abc import Collection, Set, Iterable, Sequence, Iterator, Mapping
 from copy import copy
 from difflib import get_close_matches
 from enum import Enum
 from itertools import count
+from builtins import type as Type
 
 try:
-    from mypy_extensions import mypyc_attr, trait
+    from mypy_extensions import mypyc_attr, trait, i64
 except ImportError:
 
     def mypyc_attr(*attrs: str, **kwattrs: object) -> t.Callable[[t.Any], t.Any]:  # type: ignore[misc]
@@ -21,6 +22,8 @@ except ImportError:
 
     def trait(f: t.Any) -> t.Any:  # type: ignore[misc]
         return f
+
+    i64 = int  # type: ignore[misc,assignment]
 
 
 T = t.TypeVar("T")
@@ -50,7 +53,7 @@ class AutoName(Enum):
 def suggest_closest_match_and_fail(
     kind: str,
     word: str,
-    possibilities: t.Iterable[str],
+    possibilities: Iterable[str],
 ) -> None:
     close_matches = get_close_matches(word, possibilities, n=1)
 
@@ -61,7 +64,7 @@ def suggest_closest_match_and_fail(
     raise ValueError(f"Unknown {kind} '{word}'.{similar}")
 
 
-def seq_get(seq: t.Sequence[T], index: int) -> t.Optional[T]:
+def seq_get(seq: Sequence[T], index: int) -> t.Optional[T]:
     """Returns the value in `seq` at position `index`, or `None` if `index` is out of bounds."""
     try:
         return seq[index]
@@ -69,19 +72,7 @@ def seq_get(seq: t.Sequence[T], index: int) -> t.Optional[T]:
         return None
 
 
-@t.overload
-def ensure_list(value: t.Collection[T]) -> t.List[T]: ...
-
-
-@t.overload
-def ensure_list(value: None) -> t.List: ...
-
-
-@t.overload
-def ensure_list(value: T) -> t.List[T]: ...
-
-
-def ensure_list(value):
+def ensure_list(value: T | list[T] | tuple[T, ...] | None) -> list[T]:
     """
     Ensures that a value is a list, otherwise casts or wraps it into one.
 
@@ -93,18 +84,20 @@ def ensure_list(value):
     """
     if value is None:
         return []
-    if isinstance(value, (list, tuple)):
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
         return list(value)
 
     return [value]
 
 
 @t.overload
-def ensure_collection(value: t.Collection[T]) -> t.Collection[T]: ...
+def ensure_collection(value: Collection[T]) -> Collection[T]: ...
 
 
 @t.overload
-def ensure_collection(value: T) -> t.Collection[T]: ...
+def ensure_collection(value: T) -> Collection[T]: ...
 
 
 def ensure_collection(value):
@@ -140,9 +133,9 @@ def csv(*args: str, sep: str = ", ") -> str:
 
 def subclasses(
     module_name: str,
-    classes: t.Type | t.Tuple[t.Type, ...],
-    exclude: t.Set[t.Type] = set(),
-) -> t.List[t.Type]:
+    classes: Type[T] | tuple[Type[T], ...],
+    exclude: set[Type[T]] = set(),
+) -> list[Type[T]]:
     """
     Returns all subclasses for a collection of classes, possibly excluding some of them.
 
@@ -225,7 +218,7 @@ def tsort(dag: t.Dict[T, t.Set[T]]) -> t.List[T]:
     return result
 
 
-def find_new_name(taken: t.Collection[str], base: str) -> str:
+def find_new_name(taken: Collection[str], base: str) -> str:
     """
     Searches for a new name.
 
@@ -256,7 +249,7 @@ def is_float(text: str) -> bool:
     return is_type(text, float)
 
 
-def is_type(text: str, target_type: t.Type) -> bool:
+def is_type(text: str, target_type: Type) -> bool:
     try:
         target_type(text)
         return True
@@ -328,7 +321,7 @@ def is_iterable(value: t.Any) -> bool:
     return hasattr(value, "__iter__") and not isinstance(value, (str, bytes, Expr))
 
 
-def flatten(values: t.Iterable[t.Iterable[t.Any] | t.Any]) -> t.Iterator[t.Any]:
+def flatten(values: Iterable[Iterable[t.Any] | t.Any]) -> Iterator[t.Any]:
     """
     Flattens an iterable that can contain both iterable and non-iterable elements. Objects of
     type `str` and `bytes` are not regarded as iterables.
@@ -378,9 +371,21 @@ def dict_depth(d: t.Any) -> int:
         return 1
 
 
-def first(it: t.Iterable[T]) -> T:
+def first(it: Iterable[T]) -> T:
     """Returns the first element from an iterable (useful for sets)."""
     return next(i for i in it)
+
+
+@t.overload
+def to_bool(value: None) -> None: ...
+
+
+@t.overload
+def to_bool(value: bool) -> bool: ...
+
+
+@t.overload
+def to_bool(value: str) -> str | bool: ...
 
 
 def to_bool(value: t.Optional[str | bool]) -> t.Optional[str | bool]:
@@ -452,7 +457,7 @@ K = t.TypeVar("K")
 V = t.TypeVar("V")
 
 
-class SingleValuedMapping(t.Mapping[K, V]):
+class SingleValuedMapping(Mapping[K, V]):
     """
     Mapping where all keys return the same value.
 
@@ -460,7 +465,7 @@ class SingleValuedMapping(t.Mapping[K, V]):
     as an optimization while qualifying columns for tables with lots of columns.
     """
 
-    def __init__(self, keys: t.Collection[K], value: V):
+    def __init__(self, keys: Collection[K], value: V):
         self._keys = keys if isinstance(keys, Set) else set(keys)
         self._value = value
 
@@ -472,5 +477,5 @@ class SingleValuedMapping(t.Mapping[K, V]):
     def __len__(self) -> int:
         return len(self._keys)
 
-    def __iter__(self) -> t.Iterator[K]:
+    def __iter__(self) -> Iterator[K]:
         return iter(self._keys)

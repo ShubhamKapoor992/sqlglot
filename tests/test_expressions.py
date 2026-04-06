@@ -835,6 +835,16 @@ class TestExprs(unittest.TestCase):
         self.assertEqual(alias('"foo"', "_bar").sql(), '"foo" AS _bar')
         self.assertEqual(alias("foo", "bar", quoted=True).sql(), 'foo AS "bar"')
 
+    def test_alias_with_placeholder(self):
+        # Snowflake's `AS :name` syntax parses the alias as a Placeholder node.
+        # Regression test: Expression.alias should return the placeholder name, not "".
+        expr = parse_one("SELECT PARSE_JSON(col) AS :userInfo FROM t", dialect="snowflake")
+        select = expr.selects[0]
+        self.assertIsInstance(select.args.get("alias"), exp.Placeholder)
+        self.assertEqual(select.alias, "userInfo")
+        self.assertEqual(select.alias_or_name, "userInfo")
+        self.assertEqual(select.output_name, "userInfo")
+
     def test_unit(self):
         unit = parse_one("timestamp_trunc(current_timestamp, week(thursday))")
         self.assertIsNotNone(unit.find(exp.CurrentTimestamp))
@@ -1330,3 +1340,20 @@ FROM foo""",
 
         expr1.update_positions(expr2)
         assert expr1.meta == {}
+
+    def test_pipe_and_apply(self) -> None:
+
+        def add_val(expr: exp.Expr, val: int, *, squared: bool) -> exp.Expr:
+            nb = val**2 if squared else val
+            return expr + nb
+
+        def add_val_alt(val: int, squared: bool, expr: exp.Expr) -> exp.Expr:
+            return add_val(expr, val, squared=squared)
+
+        col = exp.column("age")
+        added = add_val(col, 5, squared=True)
+
+        self.assertEqual(col, col.apply(lambda x: x))
+
+        self.assertEqual(col.pipe(add_val, 5, squared=True), added)
+        self.assertEqual(col.pipe(lambda e: add_val_alt(5, True, e)), added)

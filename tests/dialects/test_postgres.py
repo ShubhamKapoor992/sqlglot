@@ -22,6 +22,7 @@ class TestPostgres(Validator):
         expected_sql = "ARRAY[\n  x" + (",\n  x" * 27) + "\n]"
         self.validate_identity(sql, expected_sql, pretty=True)
 
+        self.validate_identity("SELECT '%' SIMILAR TO '^%' ESCAPE '^'")
         self.validate_identity("SELECT GET_BIT(CAST(44 AS BIT(10)), 6)")
         self.validate_identity("SELECT * FROM t GROUP BY ROLLUP (a || '^' || b)")
         self.validate_identity("SELECT COSH(1.5)")
@@ -166,6 +167,10 @@ class TestPostgres(Validator):
             "WHERE c.relname OPERATOR(pg_catalog.~) '^(courses)$' COLLATE pg_catalog.default AND "
             "pg_catalog.PG_TABLE_IS_VISIBLE(c.oid) "
             "ORDER BY 2, 3"
+        )
+        self.validate_identity(
+            "SELECT date_add(current_date, interval '7' day)",
+            "SELECT CURRENT_DATE + INTERVAL '7 DAY'",
         )
         self.validate_identity(
             "SELECT e'foo \\' bar'",

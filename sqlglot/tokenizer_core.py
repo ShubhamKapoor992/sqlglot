@@ -99,6 +99,7 @@ class TokenType(IntEnum):
     TABLE = auto()
     WAREHOUSE = auto()
     STAGE = auto()
+    STREAM = auto()
     STREAMLIT = auto()
     VAR = auto()
     BIT_STRING = auto()
@@ -316,6 +317,7 @@ class TokenType(IntEnum):
     INNER = auto()
     INSERT = auto()
     INSTALL = auto()
+    INTEGRATION = auto()
     INTERSECT = auto()
     INTERVAL = auto()
     INTO = auto()
@@ -364,11 +366,14 @@ class TokenType(IntEnum):
     OVER = auto()
     OVERLAPS = auto()
     OVERWRITE = auto()
+    PACKAGE = auto()
     PARTITION = auto()
     PARTITION_BY = auto()
     PERCENT = auto()
     PIVOT = auto()
     PLACEHOLDER = auto()
+    POLICY = auto()
+    POOL = auto()
     POSITIONAL = auto()
     PRAGMA = auto()
     PREWHERE = auto()
@@ -390,10 +395,12 @@ class TokenType(IntEnum):
     REFERENCES = auto()
     RIGHT = auto()
     RLIKE = auto()
+    ROLE = auto()
     ROLLBACK = auto()
     ROLLUP = auto()
     ROW = auto()
     ROWS = auto()
+    RULE = auto()
     SELECT = auto()
     SEMI = auto()
     SEPARATOR = auto()
@@ -432,6 +439,7 @@ class TokenType(IntEnum):
     VIEW = auto()
     SEMANTIC_VIEW = auto()
     VOLATILE = auto()
+    VOLUME = auto()
     WHEN = auto()
     WHERE = auto()
     WINDOW = auto()
@@ -559,6 +567,7 @@ class TokenizerCore:
         "heredoc_string_alternative",
         "keyword_trie",
         "numbers_can_be_underscore_separated",
+        "numbers_can_have_decimals",
         "identifiers_can_start_with_digit",
         "unescaped_sequences",
     )
@@ -589,6 +598,7 @@ class TokenizerCore:
         heredoc_string_alternative: TokenType,
         keyword_trie: t.Dict,
         numbers_can_be_underscore_separated: bool,
+        numbers_can_have_decimals: bool,
         identifiers_can_start_with_digit: bool,
         unescaped_sequences: t.Dict[str, str],
     ) -> None:
@@ -616,11 +626,9 @@ class TokenizerCore:
         self.heredoc_string_alternative = heredoc_string_alternative
         self.keyword_trie = keyword_trie
         self.numbers_can_be_underscore_separated = numbers_can_be_underscore_separated
+        self.numbers_can_have_decimals = numbers_can_have_decimals
         self.identifiers_can_start_with_digit = identifiers_can_start_with_digit
         self.unescaped_sequences = unescaped_sequences
-        self.reset()
-
-    def reset(self) -> None:
         self.sql = ""
         self.size = 0
         self.tokens: t.List[Token] = []
@@ -629,6 +637,20 @@ class TokenizerCore:
         self._line = 1
         self._col = 0
         self._comments: t.List[str] = []
+        self._char = ""
+        self._end = False
+        self._peek = ""
+        self._prev_token_line = -1
+
+    def reset(self) -> None:
+        self.sql = ""
+        self.size = 0
+        self.tokens = []
+        self._start = 0
+        self._current = 0
+        self._line = 1
+        self._col = 0
+        self._comments = []
         self._char = ""
         self._end = False
         self._peek = ""
@@ -922,7 +944,9 @@ class TokenizerCore:
                     end += 1
                 self._advance(end - self._current)
             elif self._peek == "." and not decimal:
-                if self.tokens and self.tokens[-1].token_type == TokenType.PARAMETER:
+                if (
+                    self.tokens and self.tokens[-1].token_type == TokenType.PARAMETER
+                ) or not self.numbers_can_have_decimals:
                     break
                 decimal = True
                 self._advance()

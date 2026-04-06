@@ -63,7 +63,7 @@ class IsAscii(Expression, Func):
 
 
 class Left(Expression, Func):
-    arg_types = {"this": True, "expression": True}
+    arg_types = {"this": True, "expression": True, "negative_length_returns_empty": False}
 
 
 class Length(Expression, Func):
@@ -119,7 +119,7 @@ class Reverse(Expression, Func):
 
 
 class Right(Expression, Func):
-    arg_types = {"this": True, "expression": True}
+    arg_types = {"this": True, "expression": True, "negative_length_returns_empty": False}
 
 
 class RtrimmedLength(Expression, Func):
@@ -177,6 +177,14 @@ class SplitPart(Expression, Func):
     }
 
 
+class Strtok(Expression, Func):
+    arg_types = {
+        "this": True,
+        "delimiter": False,
+        "part_index": False,
+    }
+
+
 class StartsWith(Expression, Func):
     _sql_names = ["STARTS_WITH", "STARTSWITH"]
     arg_types = {"this": True, "expression": True}
@@ -188,6 +196,7 @@ class StrPosition(Expression, Func):
         "substr": True,
         "position": False,
         "occurrence": False,
+        "clamp_position": False,
     }
 
 
@@ -239,7 +248,7 @@ class Trim(Expression, Func):
 
 
 class Unicode(Expression, Func):
-    pass
+    arg_types = {"this": True, "empty_is_zero": False}
 
 
 class Upper(Expression, Func):

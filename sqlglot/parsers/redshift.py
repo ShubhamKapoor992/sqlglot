@@ -8,20 +8,22 @@ from sqlglot.parsers.postgres import PostgresParser
 from sqlglot.parser import build_convert_timezone
 from sqlglot.tokens import TokenType
 from sqlglot.dialects.dialect import map_date_part
+from builtins import type as Type
 
 if t.TYPE_CHECKING:
     from sqlglot._typing import E
+    from collections.abc import Collection
 
 
-def _build_date_delta(expr_type: t.Type[E]) -> t.Callable[[t.List], E]:
-    def _builder(args: t.List) -> E:
+def _build_date_delta(expr_type: Type[E]) -> t.Callable[[list], E]:
+    def _builder(args: list) -> E:
         expr = expr_type(
             this=seq_get(args, 2),
             expression=seq_get(args, 1),
             unit=map_date_part(seq_get(args, 0)),
         )
         if expr_type is exp.TsOrDsAdd:
-            expr.set("return_type", exp.DataType.build("TIMESTAMP"))
+            expr.set("return_type", exp.DType.TIMESTAMP.into_expr())
 
         return expr
 
@@ -35,7 +37,7 @@ class RedshiftParser(PostgresParser):
             this=seq_get(args, 0),
             expression=seq_get(args, 1),
             unit=exp.var("month"),
-            return_type=exp.DataType.build("TIMESTAMP"),
+            return_type=exp.DType.TIMESTAMP.into_expr(),
         ),
         "CONVERT_TIMEZONE": lambda args: build_convert_timezone(args, "UTC"),
         "DATEADD": _build_date_delta(exp.TsOrDsAdd),
@@ -55,6 +57,7 @@ class RedshiftParser(PostgresParser):
             this=seq_get(args, 0), expression=seq_get(args, 1) or exp.Literal.string(",")
         ),
         "STRTOL": exp.FromBase.from_arg_list,
+        "TEXTLEN": exp.Length.from_arg_list,
     }
 
     NO_PAREN_FUNCTION_PARSERS = {
@@ -69,7 +72,7 @@ class RedshiftParser(PostgresParser):
         self,
         schema: bool = False,
         joins: bool = False,
-        alias_tokens: t.Optional[t.Collection[TokenType]] = None,
+        alias_tokens: t.Optional[Collection[TokenType]] = None,
         parse_bracket: bool = False,
         is_db_reference: bool = False,
         parse_partition: bool = False,

@@ -9,13 +9,14 @@ from sqlglot.errors import SchemaError
 from sqlglot.helper import dict_depth, first
 from sqlglot.trie import TrieResult, in_trie, new_trie
 
-from sqlglot.helper import mypyc_attr, trait
+from sqlglot.helper import trait
 
 
 if t.TYPE_CHECKING:
     from sqlglot.dialects.dialect import DialectType
+    from collections.abc import Sequence
 
-    ColumnMapping = t.Union[t.Dict, str, t.List]
+    ColumnMapping = t.Union[dict, str, list]
 
 
 @trait
@@ -58,7 +59,7 @@ class Schema(abc.ABC):
         only_visible: bool = False,
         dialect: DialectType = None,
         normalize: t.Optional[bool] = None,
-    ) -> t.Sequence[str]:
+    ) -> Sequence[str]:
         """
         Get the column names for a table.
 
@@ -132,7 +133,7 @@ class Schema(abc.ABC):
         Returns:
             The return type as a DataType, or UNKNOWN if not found.
         """
-        return exp.DataType.build("unknown")
+        return exp.DType.UNKNOWN.into_expr()
 
     @property
     @abc.abstractmethod
@@ -147,7 +148,6 @@ class Schema(abc.ABC):
         return True
 
 
-@mypyc_attr(native_class=True, allow_interpreted_subclasses=True)
 class AbstractMappingSchema:
     def __init__(
         self,
@@ -271,7 +271,7 @@ class AbstractMappingSchema:
         )
 
     def nested_get(
-        self, parts: t.Sequence[str], d: t.Optional[t.Dict] = None, raise_on_missing=True
+        self, parts: Sequence[str], d: t.Optional[dict] = None, raise_on_missing=True
     ) -> t.Optional[t.Any]:
         return nested_get(
             d or self.mapping,
@@ -445,7 +445,7 @@ class MappingSchema(AbstractMappingSchema, Schema):
             elif isinstance(column_type, str):
                 return self._to_data_type(column_type, dialect=dialect)
 
-        return exp.DataType.build("unknown")
+        return exp.DType.UNKNOWN.into_expr()
 
     def get_udf_type(
         self,
@@ -468,7 +468,7 @@ class MappingSchema(AbstractMappingSchema, Schema):
         resolved_parts = self._find_in_trie(parts, self.udf_trie, raise_on_missing=False)
 
         if resolved_parts is None:
-            return exp.DataType.build("unknown")
+            return exp.DType.UNKNOWN.into_expr()
 
         udf_type = nested_get(
             self.udf_mapping,
@@ -481,7 +481,7 @@ class MappingSchema(AbstractMappingSchema, Schema):
         elif isinstance(udf_type, str):
             return self._to_data_type(udf_type, dialect=dialect)
 
-        return exp.DataType.build("unknown")
+        return exp.DType.UNKNOWN.into_expr()
 
     def has_column(
         self,
@@ -762,7 +762,7 @@ def nested_get(
     return result
 
 
-def nested_set(d: t.Dict, keys: t.Sequence[str], value: t.Any) -> t.Dict:
+def nested_set(d: dict, keys: Sequence[str], value: t.Any) -> dict:
     """
     In-place set a value for a nested dictionary
 

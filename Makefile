@@ -1,4 +1,4 @@
-.PHONY: install install-dev install-devc install-devc-release install-pre-commit bench bench-parse bench-optimize test test-fast unit testc unitc style check docs docs-serve hidec showc clean resolve-integration-conflicts
+.PHONY: install install-dev install-devc install-devc-release install-pre-commit bench bench-parse bench-transpile bench-optimize test test-fast unit testc unitc style check docs docs-serve hidec showc clean resolve-integration-conflicts update-fixtures
 
 ifdef UV
     PIP := uv pip
@@ -7,16 +7,17 @@ else
 endif
 
 SO_BACKUP := /tmp/sqlglot_so_backup
+FIND_SO := find sqlglot -name "*.so"
 
 hidec:
-	rm -rf $(SO_BACKUP) && find sqlglot sqlglotc -name "*.so" | tar cf $(SO_BACKUP) -T - 2>/dev/null && find sqlglot sqlglotc -name "*.so" -delete; true
+	rm -rf $(SO_BACKUP) && $(FIND_SO) | tar cf $(SO_BACKUP) -T - 2>/dev/null && $(FIND_SO) -delete; true
 
 showc:
 	tar xf $(SO_BACKUP) 2>/dev/null; rm -f $(SO_BACKUP); true
 
 clean:
 	rm -rf build sqlglotc/build sqlglotc/dist sqlglotc/*.egg-info sqlglotc/sqlglot
-	find sqlglot sqlglotc build -name "*.so" -delete 2>/dev/null; true
+	$(FIND_SO) -delete 2>/dev/null; true
 
 install:
 	$(PIP) install -e .
@@ -36,11 +37,11 @@ install-dev:
 		fi; \
 	fi
 
-install-devc: clean
-	cd sqlglotc && $(PIP) install -e .
+install-devc:
+	cd sqlglotc && MYPYC_OPT=0 python setup.py build_ext --inplace
 
 install-devc-release: clean
-	MYPYC_OPT=3 $(MAKE) install-devc
+	cd sqlglotc && python setup.py build_ext --inplace
 
 install-pre-commit:
 	pre-commit install
@@ -50,10 +51,13 @@ install-pre-commit:
 	@printf '#!/bin/bash\n.github/scripts/integration_tests_sync.sh post-commit\n' > .git/hooks/post-commit
 	@chmod +x .git/hooks/post-commit
 
-bench: bench-parse bench-optimize
+bench: bench-parse bench-transpile bench-optimize
 
 bench-parse:
 	python -m benchmarks.parse
+
+bench-transpile:
+	python -m benchmarks.parse --mode transpile
 
 bench-optimize:
 	python -m benchmarks.optimize
@@ -75,6 +79,7 @@ unitc: install-devc
 
 style:
 	pre-commit run --all-files
+	@if [ -f sqlglot-integration-tests/Makefile ]; then $(MAKE) -C sqlglot-integration-tests check-submodule; fi
 
 check: style test testc
 
@@ -86,3 +91,6 @@ docs-serve:
 
 resolve-integration-conflicts:
 	cd sqlglot-integration-tests && git pull --rebase --autostash
+
+update-fixtures:
+	python sqlglot-integration-tests/scripts/update_dbt_fixtures.py

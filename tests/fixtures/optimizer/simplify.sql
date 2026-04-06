@@ -409,6 +409,9 @@ SELECT -(x.a > x.b) FROM x;
 SELECT (-((x.a) IS NULL)) FROM x;
 SELECT -(x.a IS NULL) FROM x;
 
+SELECT * FROM A WHERE a - (b < c) < 0 AND a + (b > c) >= 0;
+SELECT * FROM A WHERE a + (b > c) >= 0 AND a - (b < c) < 0;
+
 
 --------------------------------------
 -- Literals
@@ -883,6 +886,36 @@ CAST(CAST(CAST(1 AS INT) AS BOOLEAN) AS INT) = 1;
 
 x > CAST('2023-01-01' AS DATE) AND x < CAST('2023-01-01' AS DATETIME);
 FALSE;
+
+CAST(x AS INT) < 0 AND CAST(x AS INT) >= -500;
+CAST(x AS INT) < 0 AND CAST(x AS INT) >= -500;
+
+CAST(x AS INT) < -1 AND CAST(x AS INT) >= -500;
+CAST(x AS INT) < -1 AND CAST(x AS INT) >= -500;
+
+CAST(x AS INT) < -500 AND CAST(x AS INT) >= -1;
+FALSE;
+
+0 > CAST(x AS INT) AND -500 <= CAST(x AS INT);
+CAST(x AS INT) < 0 AND CAST(x AS INT) >= -500;
+
+-1 > CAST(x AS INT) AND -500 <= CAST(x AS INT);
+CAST(x AS INT) < -1 AND CAST(x AS INT) >= -500;
+
+-500 > CAST(x AS INT) AND -1 <= CAST(x AS INT);
+FALSE;
+
+CAST(x AS INT) < 1000 AND CAST(x AS INT) >= - -500;
+CAST(x AS INT) < 1000 AND CAST(x AS INT) >= 500;
+
+CAST(x AS INT) < 0 AND CAST(x AS INT) >= - - -500;
+CAST(x AS INT) < 0 AND CAST(x AS INT) >= -500;
+
+1000 > CAST(x AS INT) AND - -500 <= CAST(x AS INT);
+CAST(x AS INT) < 1000 AND CAST(x AS INT) >= 500;
+
+0 > CAST(x AS INT) AND - - -500 <= CAST(x AS INT);
+CAST(x AS INT) < 0 AND CAST(x AS INT) >= -500;
 
 --------------------------------------
 -- COALESCE

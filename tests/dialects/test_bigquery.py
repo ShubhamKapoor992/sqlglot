@@ -1841,6 +1841,7 @@ WHERE
             },
         )
 
+        self.validate_identity("EXPORT DATA OPTIONS (URI='gs://bucket/folder/*.csv') AS (SELECT 1)")
         self.validate_identity(
             "EXPORT DATA OPTIONS (URI='gs://path*.csv.gz', FORMAT='CSV') AS SELECT * FROM all_rows"
         )
@@ -2228,6 +2229,9 @@ WHERE
                     "presto": "a[1]",
                 },
             )
+            self.validate_identity(
+                "WITH foo AS (SELECT [1, 2, 3] AS array_col) SELECT array_col[offset] FROM foo CROSS JOIN UNNEST(array_col) WITH OFFSET AS offset",
+            )
 
         with self.assertLogs(parser_logger) as cm:
             for_in_stmts = parse(
@@ -2445,7 +2449,7 @@ OPTIONS (
             },
         )
 
-    @mock.patch("sqlglot.dialects.bigquery.logger")
+    @mock.patch("sqlglot.generators.bigquery.logger")
     def test_pushdown_cte_column_names(self, logger):
         with self.assertRaises(UnsupportedError):
             transpile(
@@ -2694,6 +2698,34 @@ OPTIONS (
                     "bigquery": f"SELECT SUM(f1) OVER (ORDER BY f2 {sort_order}) FROM t",
                 },
             )
+
+    def test_null_ordering_in_analytic_functions(self):
+        for func_call in (
+            "FIRST_VALUE(col1)",
+            "LAST_VALUE(col1)",
+            "NTH_VALUE(col1, 2)",
+        ):
+            for sort_order, null_order in (("ASC", "NULLS LAST"), ("DESC", "NULLS FIRST")):
+                with self.subTest(f"{func_call} with {sort_order} {null_order} ROWS"):
+                    self.validate_identity(
+                        f"WITH t AS (SELECT 1 AS id, 2 AS col1) SELECT {func_call} OVER (PARTITION BY id ORDER BY col1 {sort_order} {null_order} ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) FROM t"
+                    )
+
+        for func_call in (
+            "LAG(col1)",
+            "LEAD(col1)",
+            "CUME_DIST()",
+            "DENSE_RANK()",
+            "NTILE(4)",
+            "PERCENT_RANK()",
+            "RANK()",
+            "ROW_NUMBER()",
+        ):
+            for sort_order, null_order in (("ASC", "NULLS LAST"), ("DESC", "NULLS FIRST")):
+                with self.subTest(f"{func_call} with {sort_order} {null_order}"):
+                    self.validate_identity(
+                        f"WITH t AS (SELECT 1 AS id, 2 AS col1) SELECT {func_call} OVER (PARTITION BY id ORDER BY col1 {sort_order} {null_order}) FROM t"
+                    )
 
     def test_json_extract(self):
         self.validate_all(
@@ -2959,6 +2991,32 @@ OPTIONS (
             },
         )
 
+    def test_cast_format_with_parentheses(self):
+        self.validate_identity(
+            "SELECT CAST('2026-03-24' AS STRING FORMAT ('YYYY'))",
+            "SELECT CAST('2026-03-24' AS STRING FORMAT 'YYYY')",
+        )
+
+        self.validate_identity(
+            "SELECT CAST(date AS STRING FORMAT ('YYYY')) FROM (SELECT DATE('2026-03-24') AS date)",
+            "SELECT CAST(date AS STRING FORMAT 'YYYY') FROM (SELECT DATE('2026-03-24') AS date)",
+        )
+
+        self.validate_identity(
+            "SELECT CAST(date AS STRING FORMAT ('YYYY-MM-DD'))",
+            "SELECT CAST(date AS STRING FORMAT 'YYYY-MM-DD')",
+        )
+
+        self.validate_identity(
+            "SELECT CAST(timestamp AS STRING FORMAT ('YYYY-MM-DD') AT TIME ZONE 'UTC')",
+            "SELECT CAST(timestamp AS STRING FORMAT 'YYYY-MM-DD' AT TIME ZONE 'UTC')",
+        )
+
+        self.validate_identity(
+            "SELECT CAST(date AS TIMESTAMP FORMAT ('YYYY-MM-DD HH24:MI:SS'))",
+            "SELECT PARSE_TIMESTAMP('%F %T', date)",
+        )
+
     def test_string_agg(self):
         self.validate_identity("STRING_AGG(a, ' & ')")
         self.validate_identity("STRING_AGG(DISTINCT a, ' & ')")
@@ -3178,7 +3236,7 @@ OPTIONS (
             -- bar, /* the thing */
         from facts
         """
-        expected = "SELECT\n  id,\n  foo\n/* bar, /* the thing * / */\nFROM facts"
+        expected = "SELECT\n  id,\n  foo\n/* bar, / * the thing * / */\nFROM facts"
         self.assertEqual(self.parse_one(sql).sql("bigquery", pretty=True), expected)
 
     def test_unnest_with_offset(self):

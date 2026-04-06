@@ -12,6 +12,9 @@ from sqlglot.optimizer.scope import ScopeType
 
 if t.TYPE_CHECKING:
     from sqlglot.dialects.dialect import DialectType
+    from collections.abc import Iterator, Mapping, Sequence
+    from sqlglot._typing import GraphHTMLArgs
+    from typing_extensions import Unpack
 
 logger = logging.getLogger("sqlglot")
 
@@ -21,12 +24,12 @@ class Node:
     name: str
     expression: exp.Expr
     source: exp.Expr
-    downstream: t.List[Node] = field(default_factory=list)
+    downstream: list[Node] = field(default_factory=list)
     source_name: str = ""
     reference_node_name: str = ""
 
-    def walk(self) -> t.Iterator[Node]:
-        visited: t.Set[int] = set()
+    def walk(self) -> Iterator[Node]:
+        visited: set[int] = set()
         queue = [self]
         while queue:
             node = queue.pop()
@@ -37,7 +40,7 @@ class Node:
             yield node
             queue.extend(reversed(node.downstream))
 
-    def to_html(self, dialect: DialectType = None, **opts) -> GraphHTML:
+    def to_html(self, dialect: DialectType = None, **opts: Unpack[GraphHTMLArgs]) -> GraphHTML:
         nodes = {}
         edges = []
 
@@ -74,13 +77,12 @@ class Node:
 def lineage(
     column: str | exp.Column,
     sql: str | exp.Expr,
-    schema: t.Optional[t.Dict | Schema] = None,
-    sources: t.Optional[t.Mapping[str, str | exp.Query]] = None,
+    schema: t.Optional[dict | Schema] = None,
+    sources: t.Optional[Mapping[str, str | exp.Query]] = None,
     dialect: DialectType = None,
     scope: t.Optional[Scope] = None,
     trim_selects: bool = True,
     copy: bool = True,
-    read_only: bool = False,
     **kwargs,
 ) -> Node:
     """Build the lineage graph for a column of a SQL query.
@@ -94,10 +96,6 @@ def lineage(
         scope: A pre-created scope to use instead.
         trim_selects: Whether to clean up selects by trimming to only relevant columns.
         copy: Whether to copy the Expr arguments.
-        read_only: Whether the returned node graph is read-only. Enables optimizations
-            such as sharing cached nodes across CTE references, producing a DAG instead
-            of a tree. When False (default), cached nodes are copied to ensure each
-            reference is independent and safely mutable.
         **kwargs: Qualification optimizer kwargs.
 
     Returns:
@@ -162,14 +160,17 @@ def to_node(
     # Find the specific select clause that is the source of the column we want.
     # This can either be a specific, named select or a generic `*` clause.
     selectable = t.cast(exp.Selectable, scope.expression)
-    select = (
-        selectable.selects[column]
-        if isinstance(column, int)
-        else next(
+    if isinstance(column, int):
+        if column >= len(selectable.selects):
+            raise SqlglotError(
+                f"Cannot find column's source with index {column} in query: {selectable.sql(dialect=dialect)}"
+            )
+        select = selectable.selects[column]
+    else:
+        select = next(
             (select for select in selectable.selects if select.alias_or_name == column),
             exp.Star() if selectable.is_star else scope.expression,
         )
-    )
 
     if isinstance(scope.expression, exp.Subquery):
         for inner_scope in scope.subquery_scopes:
@@ -277,7 +278,7 @@ def to_node(
     # If the source is a UDTF find columns used in the UDTF to generate the table
     if isinstance(source, exp.UDTF):
         source_columns |= set(source.find_all(exp.Column))
-        derived_tables: t.Sequence[exp.Expr] = [
+        derived_tables: Sequence[exp.Expr] = [
             src.expression.parent
             for src in scope.sources.values()
             if isinstance(src, Scope) and src.is_derived_table and src.expression.parent
@@ -397,7 +398,11 @@ class GraphHTML:
     """
 
     def __init__(
-        self, nodes: t.Dict, edges: t.List, imports: bool = True, options: t.Optional[t.Dict] = None
+        self,
+        nodes: dict,
+        edges: list,
+        imports: bool = True,
+        options: t.Optional[Mapping[str, object]] = None,
     ):
         self.imports = imports
 

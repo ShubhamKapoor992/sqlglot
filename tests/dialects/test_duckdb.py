@@ -1,3 +1,5 @@
+from unittest import mock
+
 from sqlglot import ParseError, UnsupportedError, exp, parse_one
 from sqlglot.generator import logger as generator_logger
 from sqlglot.helper import logger as helper_logger
@@ -9,11 +11,13 @@ class TestDuckDB(Validator):
     dialect = "duckdb"
 
     def test_duckdb(self):
-        # Numeric TRUNC - DuckDB only supports TRUNC(x), no decimals parameter
         self.validate_identity("TRUNC(3.14)").assert_is(exp.Trunc)
         self.validate_all(
-            "TRUNC(3.14159)",
-            read={"postgres": "TRUNC(3.14159, 2)"},
+            "TRUNC(3.14159, 2)",
+            read={
+                "postgres": "TRUNC(3.14159, 2)",
+                "duckdb": "TRUNC(3.14159, 2)",
+            },
         )
 
         self.validate_identity("SELECT ([1,2,3])[:-:-1]", "SELECT ([1, 2, 3])[:-1:-1]")
@@ -98,9 +102,9 @@ class TestDuckDB(Validator):
         )
 
         self.validate_all(
-            """SELECT CASE WHEN JSON_VALID('{"x: 1}') THEN '{"x: 1}' ELSE NULL END""",
+            """SELECT CASE WHEN JSON_VALID('{"x: 1}') THEN CAST('{"x: 1}' AS JSON) ELSE NULL END""",
             read={
-                "duckdb": """SELECT CASE WHEN JSON_VALID('{"x: 1}') THEN '{"x: 1}' ELSE NULL END""",
+                "duckdb": """SELECT CASE WHEN JSON_VALID('{"x: 1}') THEN CAST('{"x: 1}' AS JSON) ELSE NULL END""",
                 "snowflake": """SELECT TRY_PARSE_JSON('{"x: 1}')""",
             },
         )
@@ -125,7 +129,6 @@ class TestDuckDB(Validator):
                 "bigquery": "ARRAY_TO_STRING(arr, delim)",
                 "postgres": "ARRAY_TO_STRING(arr, delim)",
                 "presto": "ARRAY_JOIN(arr, delim)",
-                "snowflake": "ARRAY_TO_STRING(arr, delim)",
                 "spark": "ARRAY_JOIN(arr, delim)",
             },
             write={
@@ -136,6 +139,12 @@ class TestDuckDB(Validator):
                 "snowflake": "ARRAY_TO_STRING(arr, delim)",
                 "spark": "ARRAY_JOIN(arr, delim)",
                 "tsql": "STRING_AGG(arr, delim)",
+            },
+        )
+        self.validate_all(
+            "SELECT CASE WHEN delim IS NULL THEN NULL ELSE ARRAY_TO_STRING(LIST_TRANSFORM(arr, x -> COALESCE(CAST(x AS TEXT), '')), delim) END",
+            read={
+                "snowflake": "SELECT ARRAY_TO_STRING(arr, delim)",
             },
         )
         self.validate_all(
@@ -163,7 +172,7 @@ class TestDuckDB(Validator):
         )
 
         self.validate_all(
-            "CREATE TEMPORARY FUNCTION f1(a, b) AS (a + b)",
+            "CREATE TEMPORARY FUNCTION f1(a BIGINT, b BIGINT) AS (a + b)",
             read={
                 "bigquery": "CREATE TEMP FUNCTION f1(a INT64, b INT64) AS (a + b)",
             },
@@ -281,7 +290,22 @@ class TestDuckDB(Validator):
             "WITH t AS (SELECT 5 AS c) SELECT RANGE(1, c) FROM t",
             write={
                 "duckdb": "WITH t AS (SELECT 5 AS c) SELECT RANGE(1, c) FROM t",
-                "spark": "WITH t AS (SELECT 5 AS c) SELECT IF((c - 1) <= 1, ARRAY(), SEQUENCE(1, (c - 1))) FROM t",
+                "spark": "WITH t AS (SELECT 5 AS c) SELECT IF((c - 1) < 1, ARRAY(), SEQUENCE(1, (c - 1))) FROM t",
+            },
+        )
+        # Test edge case: RANGE(1, 2) should return [1], not []
+        self.validate_all(
+            "WITH t AS (SELECT 2 AS c) SELECT RANGE(1, c) FROM t",
+            write={
+                "duckdb": "WITH t AS (SELECT 2 AS c) SELECT RANGE(1, c) FROM t",
+                "spark": "WITH t AS (SELECT 2 AS c) SELECT IF((c - 1) < 1, ARRAY(), SEQUENCE(1, (c - 1))) FROM t",
+            },
+        )
+        self.validate_all(
+            "SELECT RANGE(1, 2)",
+            write={
+                "duckdb": "SELECT RANGE(1, 2)",
+                "spark": "SELECT SEQUENCE(1, 1)",
             },
         )
         self.validate_all(
@@ -303,6 +327,18 @@ class TestDuckDB(Validator):
             write={
                 "duckdb": """SELECT JSON('{"fruit": {"foo": "banana"}}') -> '$.fruit' -> '$.foo'""",
                 "snowflake": """SELECT GET_PATH(GET_PATH(PARSE_JSON('{"fruit": {"foo": "banana"}}'), 'fruit'), 'foo')""",
+            },
+        )
+        self.validate_all(
+            "CASE WHEN JSON_TYPE(x) = 'NULL' THEN NULL ELSE x END",
+            read={
+                "snowflake": "STRIP_NULL_VALUE(x)",
+            },
+        )
+        self.validate_all(
+            """SELECT CASE WHEN JSON_TYPE(JSON('{"a": null}') -> '$.a') = 'NULL' THEN NULL ELSE JSON('{"a": null}') -> '$.a' END""",
+            read={
+                "snowflake": """SELECT STRIP_NULL_VALUE(GET_PATH(PARSE_JSON('{"a": null}'), 'a'))""",
             },
         )
         self.validate_all(
@@ -448,6 +484,10 @@ class TestDuckDB(Validator):
         self.validate_identity("FROM  x SELECT x UNION SELECT 1", "SELECT x FROM x UNION SELECT 1")
         self.validate_identity("FROM (FROM tbl)", "SELECT * FROM (SELECT * FROM tbl)")
         self.validate_identity("FROM tbl", "SELECT * FROM tbl")
+        self.validate_identity(
+            "SELECT * FROM t1 WHERE NOT EXISTS(FROM t2 WHERE t2.id = t1.id)",
+            "SELECT * FROM t1 WHERE NOT EXISTS(SELECT * FROM t2 WHERE t2.id = t1.id)",
+        )
         self.validate_identity("x -> '$.family'")
         self.validate_identity("CREATE TABLE color (name ENUM('RED', 'GREEN', 'BLUE'))")
         self.validate_identity("SELECT * FROM foo WHERE bar > $baz AND bla = $bob")
@@ -618,11 +658,8 @@ class TestDuckDB(Validator):
         self.validate_identity("REGEXP_FULL_MATCH(x, y, 'i')")
         self.validate_all("SELECT * FROM 'x.y'", write={"duckdb": 'SELECT * FROM "x.y"'})
         self.validate_all(
-            "SELECT LIST(DISTINCT sample_col) FROM sample_table",
-            read={
-                "duckdb": "SELECT LIST(DISTINCT sample_col) FROM sample_table",
-                "spark": "SELECT COLLECT_SET(sample_col) FROM sample_table",
-            },
+            "SELECT LIST(DISTINCT sample_col) FILTER(WHERE NOT sample_col IS NULL) FROM sample_table",
+            read={"spark": "SELECT COLLECT_SET(sample_col) FROM sample_table"},
         )
         self.validate_all(
             "SELECT LIST_TRANSFORM(STR_SPLIT_REGEX('abc , dfg ', ','), x -> TRIM(x))",
@@ -979,12 +1016,21 @@ class TestDuckDB(Validator):
         self.validate_all(
             "LIST_SORT(x)",
             write={
-                "duckdb": "ARRAY_SORT(x)",
+                "duckdb": "LIST_SORT(x)",
                 "presto": "ARRAY_SORT(x)",
                 "hive": "SORT_ARRAY(x)",
                 "spark": "SORT_ARRAY(x)",
             },
         )
+        self.validate_identity("SELECT LIST_SORT(x, 'ASC')")
+        self.validate_identity("SELECT LIST_SORT(x, 'DESC')")
+        self.validate_identity("SELECT LIST_SORT(x, 'ASC', 'NULLS FIRST')")
+        self.validate_identity("SELECT LIST_SORT(x, 'ASC', 'NULLS LAST')")
+        self.validate_identity("SELECT LIST_SORT(x, 'DESC', 'NULLS FIRST')")
+        self.validate_identity("SELECT LIST_SORT(x, 'DESC', 'NULLS LAST')")
+        self.validate_identity("SELECT LIST_SORT(x, 'DE' || 'SC')")
+        self.validate_identity("SELECT LIST_SORT(x, 'DESC', 'NULLS' || ' FIRST')")
+        self.validate_identity("SELECT LIST_SORT(x, 'DE' || 'SC', 'NULLS' || ' FIRST')")
         self.validate_all(
             "SELECT fname, lname, age FROM person ORDER BY age DESC NULLS FIRST, fname ASC NULLS LAST, lname",
             write={
@@ -1468,6 +1514,14 @@ class TestDuckDB(Validator):
         )
         self.validate_identity(
             "SELECT LAST_VALUE(x ORDER BY x RESPECT NULLS) OVER (ORDER BY x) FROM t"
+        )
+
+        self.validate_identity("UNICODE(foo)")
+        self.validate_all(
+            "CASE WHEN foo = '' THEN 0 ELSE UNICODE(foo) END",
+            read={
+                "snowflake": "UNICODE(foo)",
+            },
         )
 
     def test_array_index(self):
@@ -2125,6 +2179,23 @@ class TestDuckDB(Validator):
             write={"bigquery": "SELECT @foo", "duckdb": "SELECT $foo"},
         )
 
+    def test_iceberg_property_no_warning(self):
+        expression = parse_one("CREATE ICEBERG TABLE t (a INT)", dialect="snowflake")
+
+        with mock.patch("sqlglot.generator.logger.warning") as warning:
+            self.assertEqual(expression.sql(dialect="duckdb"), "CREATE TABLE t (a INT)")
+            warning.assert_not_called()
+
+    def test_non_iceberg_property_still_warns(self):
+        expression = parse_one("CREATE TRANSIENT TABLE t (a INT)", dialect="snowflake")
+
+        with self.assertLogs(generator_logger) as cm:
+            self.assertEqual(expression.sql(dialect="duckdb"), "CREATE TABLE t (a INT)")
+
+        self.assertEqual(
+            str(cm.output[0]), "WARNING:sqlglot:Unsupported property transientproperty"
+        )
+
     def test_ignore_nulls(self):
         # Note that DuckDB differentiates window functions (e.g. LEAD, LAG) from aggregate functions (e.g. SUM)
         from sqlglot.dialects.duckdb import DuckDB
@@ -2325,6 +2396,9 @@ class TestDuckDB(Validator):
 
     def test_show_tables(self):
         self.validate_identity("SHOW TABLES").assert_is(exp.Show)
+        self.validate_identity("SHOW TABLES FROM my_schema").assert_is(exp.Show)
+        self.validate_identity("SHOW TABLES FROM my_database").assert_is(exp.Show)
+        self.validate_identity("SHOW TABLES FROM my_database.my_schema").assert_is(exp.Show)
         self.validate_identity("SHOW ALL TABLES").assert_is(exp.Show)
 
     def test_extract_date_parts(self):
@@ -2416,6 +2490,19 @@ class TestDuckDB(Validator):
                 self.validate_identity(
                     f"CREATE {keyword} ifelse(a, b, c) AS CASE WHEN a THEN b ELSE c END"
                 )
+
+            with self.subTest(f"Testing DuckDB's table functions with keyword: {keyword}"):
+                self.validate_identity(
+                    f"CREATE {keyword} my_table_function(a, b) AS TABLE SELECT x, y FROM (VALUES (a, b)) AS tbl(x, y)"
+                ).assert_is(exp.Create)
+
+        self.validate_all(
+            "CREATE OR REPLACE FUNCTION func(a INT, b FLOAT) AS TABLE SELECT a",
+            write={
+                "databricks": "CREATE OR REPLACE FUNCTION func(a INT, b FLOAT) RETURNS TABLE RETURN SELECT a",
+                "duckdb": "CREATE OR REPLACE FUNCTION func(a INT, b REAL) AS TABLE SELECT a",
+            },
+        )
 
     def test_bitwise_agg(self):
         self.validate_all(
@@ -2662,4 +2749,12 @@ class TestDuckDB(Validator):
                 dialect="snowflake",
             ).sql("duckdb"),
             "SELECT MAP_CONCAT(my_map, MAP {'key': 42}) FROM my_table",
+        )
+
+        self.validate_all(
+            "SELECT TO_VARIANT('1')",
+            write={
+                "duckdb": "SELECT CAST('1' AS VARIANT)",
+                "snowflake": "SELECT TO_VARIANT('1')",
+            },
         )

@@ -17,6 +17,7 @@ from sqlglot.tokens import TokenType
 
 if t.TYPE_CHECKING:
     from sqlglot._typing import E
+    from collections.abc import Collection
 
 FULL_FORMAT_TIME_MAPPING = {
     "weekday": "%A",
@@ -420,9 +421,11 @@ class TSQLParser(parser.Parser):
     # The DCOLON (::) operator serves as a scope resolution (exp.ScopeResolution) operator in T-SQL
     COLUMN_OPERATORS = {
         **parser.Parser.COLUMN_OPERATORS,
-        TokenType.DCOLON: lambda self, this, to: self.expression(exp.Cast(this=this, to=to))
-        if isinstance(to, exp.DataType) and to.this != exp.DType.USERDEFINED
-        else self.expression(exp.ScopeResolution(this=this, expression=to)),
+        TokenType.DCOLON: lambda self, this, to: (
+            self.expression(exp.Cast(this=this, to=to))
+            if isinstance(to, exp.DataType) and to.this != exp.DType.USERDEFINED
+            else self.expression(exp.ScopeResolution(this=this, expression=to))
+        ),
     }
 
     SET_OP_MODIFIERS = {"offset"}
@@ -646,7 +649,7 @@ class TSQLParser(parser.Parser):
     def _parse_id_var(
         self,
         any_token: bool = True,
-        tokens: t.Optional[t.Collection[TokenType]] = None,
+        tokens: t.Optional[Collection[TokenType]] = None,
     ) -> t.Optional[exp.Expr]:
         is_temporary = self._match(TokenType.HASH)
         is_global = is_temporary and self._match(TokenType.HASH)

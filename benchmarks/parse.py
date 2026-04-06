@@ -1,4 +1,6 @@
+import argparse
 import inspect
+import json
 import os
 import subprocess
 import sys
@@ -43,13 +45,13 @@ large_case = (
 )
 
 complex_where = "SELECT * FROM t WHERE " + " AND ".join(
-    f"(c{i} > {i} OR c{i} LIKE '%s{i}%' OR c{i} BETWEEN {i} AND {i+10} OR c{i} IS NULL)"
+    f"(c{i} > {i} OR c{i} LIKE '%s{i}%' OR c{i} BETWEEN {i} AND {i + 10} OR c{i} IS NULL)"
     for i in range(200)
 )
 
 many_ctes = (
     "WITH "
-    + ", ".join(f"t{i} AS (SELECT {i} AS a FROM t{i-1 if i else 'base'})" for i in range(200))
+    + ", ".join(f"t{i} AS (SELECT {i} AS a FROM t{i - 1 if i else 'base'})" for i in range(200))
     + " SELECT * FROM t199"
 )
 
@@ -191,6 +193,12 @@ def sqlglot_parse(sql):
     sqlglot.parse_one(sql, error_level=sqlglot.ErrorLevel.IGNORE)
 
 
+def sqlglot_transpile(sql):
+    import sqlglot
+
+    sqlglot.transpile(sql, error_level=sqlglot.ErrorLevel.IGNORE)[0]
+
+
 def sqltree_parse(sql):
     import sqltree
 
@@ -227,6 +235,12 @@ def polyglot_sql_parse(sql):
     polyglot_sql.parse_one(sql)
 
 
+def polyglot_sql_transpile(sql):
+    import polyglot_sql
+
+    polyglot_sql.transpile(sql)[0]
+
+
 THIRD_PARTY_PARSERS = {
     "sqltree": sqltree_parse,
     "sqlparse": sqlparse_parse,
@@ -234,6 +248,10 @@ THIRD_PARTY_PARSERS = {
     "moz_sql_parser": moz_sql_parser_parse,
     "sqloxide": sqloxide_parse,
     "polyglot_sql": polyglot_sql_parse,
+}
+
+THIRD_PARTY_TRANSPILERS = {
+    "polyglot_sql": polyglot_sql_transpile,
 }
 
 DISPLAY_NAMES = {
@@ -289,11 +307,13 @@ signal.alarm(5)
     return supported if installed else None
 
 
-def _discover_parsers():
+def _discover_parsers(registry=None):
     """Discover available third-party parsers and which queries they support."""
+    if registry is None:
+        registry = THIRD_PARTY_PARSERS
     valid_pairs = set()
     available = []
-    for parser_name, parse_fn in THIRD_PARTY_PARSERS.items():
+    for parser_name, parse_fn in registry.items():
         supported = _check_parser(parse_fn, QUERIES)
         if supported is None:
             continue
@@ -306,40 +326,46 @@ def _discover_parsers():
 # --- Benchmarking ---
 
 
+_quiet = False
+
+
 def _bench(name, fn, *args, iterations=5):
-    """Benchmark fn(*args) and return the median time in seconds."""
-    times = []
+    """Benchmark fn(*args) and return the best time in seconds."""
+    best = float("inf")
     for _ in range(iterations):
         t0 = time.perf_counter()
         fn(*args)
-        times.append(time.perf_counter() - t0)
-        if times[-1] > 1:
+        elapsed = time.perf_counter() - t0
+        if elapsed < best:
+            best = elapsed
+        if elapsed > 1:
             break
-    times.sort()
-    median = times[len(times) // 2]
-    print(f"  {name}: {_fmt_time(median)}")
-    return median
+    if not _quiet:
+        print(f"  {name}: {_fmt_time(best)}")
+    return best
 
 
-def _bench_sqlglot(results):
+def _bench_sqlglot(results, mode="parse"):
     """Benchmark sqlglot (or sqlglotc if .so loaded) and add to results."""
     import sqlglot.expressions.core as _ec
 
     prefix = "sqlglotc" if _ec.__file__.endswith(".so") else "sqlglot"
+    fn = sqlglot_transpile if mode == "transpile" else sqlglot_parse
     for query_name, sql in QUERIES.items():
-        results[f"{prefix}:{query_name}"] = _bench(f"{prefix}:{query_name}", sqlglot_parse, sql)
+        key = f"{prefix}:{query_name}"
+        results[key] = _bench(key, fn, sql)
     return prefix
 
 
-def _bench_third_party(results):
-    """Benchmark third-party parsers and add to results. Returns list of available parser names."""
-    available, valid_pairs = _discover_parsers()
+def _bench_third_party(results, mode="parse"):
+    """Benchmark third-party parsers/transpilers and add to results. Returns list of available names."""
+    registry = THIRD_PARTY_TRANSPILERS if mode == "transpile" else THIRD_PARTY_PARSERS
+    available, valid_pairs = _discover_parsers(registry)
     for query_name, sql in QUERIES.items():
-        for parser_name, parse_fn in THIRD_PARTY_PARSERS.items():
-            if (parser_name, query_name) in valid_pairs:
-                results[f"{parser_name}:{query_name}"] = _bench(
-                    f"{parser_name}:{query_name}", parse_fn, sql
-                )
+        for name, fn in registry.items():
+            if (name, query_name) in valid_pairs:
+                key = f"{name}:{query_name}"
+                results[key] = _bench(key, fn, sql)
     return available
 
 
@@ -411,8 +437,11 @@ def _has_so_files():
 
 def _run_subprocess():
     """Run sqlglot benchmarks and print results to stdout as key=value lines."""
+    global _quiet
+    _quiet = bool(os.environ.get("_BENCH_QUIET"))
+    mode = os.environ.get("_BENCH_MODE", "parse")
     results = {}
-    _bench_sqlglot(results)
+    _bench_sqlglot(results, mode=mode)
     for key, value in results.items():
         print(f"{key}={value}")
 
@@ -420,40 +449,82 @@ def _run_subprocess():
 # --- Main ---
 
 
+def _parse_args():
+    parser = argparse.ArgumentParser(description="SQLGlot parser benchmarks")
+    parser.add_argument("--json", metavar="FILE", help="Write results as JSON to FILE")
+    parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
+    parser.add_argument(
+        "--sqlglot-only",
+        action="store_true",
+        help="Only benchmark sqlglot/sqlglotc (skip third-party parsers)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=["parse", "transpile"],
+        default="parse",
+        help="Benchmark mode: parse or transpile (default: parse)",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
     if os.environ.get("_BENCH_SUBPROCESS"):
         _run_subprocess()
-    elif _has_so_files():
-        # Run sqlglotc in subprocess (needs separate process to isolate .so imports)
-        print("=== Running sqlglot[c] ===", flush=True)
-        env = {**os.environ, "_BENCH_SUBPROCESS": "1"}
-        proc = subprocess.run(
-            [sys.executable, __file__], env=env, capture_output=True, text=True, check=True
-        )
-        # Extract results from subprocess output, print the rest
-        results = {}
-        for line in proc.stdout.splitlines():
-            if "=" in line:
-                key, value = line.split("=", 1)
-                results[key] = float(value)
-            else:
-                print(line)
-
-        # Hide .so files and run pure Python + third-party in this process
-        print("\n=== Hiding .so files ===", flush=True)
-        subprocess.run(["make", "hidec"], check=True, capture_output=True)
-
-        try:
-            print("\n=== Running pure Python + third-party parsers ===", flush=True)
-            _bench_sqlglot(results)
-            available = _bench_third_party(results)
-        finally:
-            subprocess.run(["make", "showc"], capture_output=True)
-
-        _print_table("sqlglot", ["sqlglot", "sqlglotc"] + available, results)
     else:
-        # No .so files: run everything directly
-        results = {}
-        prefix = _bench_sqlglot(results)
-        available = _bench_third_party(results)
-        _print_table(prefix, [prefix] + available, results)
+        args = _parse_args()
+        _quiet = args.quiet
+
+        mode = args.mode
+
+        if _has_so_files():
+            if not _quiet:
+                print("=== Running sqlglot[c] ===", flush=True)
+            env = {**os.environ, "_BENCH_SUBPROCESS": "1", "_BENCH_MODE": mode}
+            if _quiet:
+                env["_BENCH_QUIET"] = "1"
+            proc = subprocess.run(
+                [sys.executable, __file__], env=env, capture_output=True, text=True, check=True
+            )
+            results = {}
+            for line in proc.stdout.splitlines():
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    results[key] = float(value)
+                elif not _quiet:
+                    print(line)
+
+            if not _quiet:
+                print("\n=== Hiding .so files ===", flush=True)
+            subprocess.run(["make", "hidec"], check=True, capture_output=True)
+
+            try:
+                if not _quiet:
+                    print("\n=== Running pure Python ===", flush=True)
+                _bench_sqlglot(results, mode=mode)
+                if not args.sqlglot_only:
+                    if not _quiet:
+                        print(f"\n=== Running third-party ({mode}) ===", flush=True)
+                    available = _bench_third_party(results, mode=mode)
+                else:
+                    available = []
+            finally:
+                subprocess.run(["make", "showc"], capture_output=True)
+
+            if args.json:
+                with open(args.json, "w") as f:
+                    json.dump(results, f, indent=2)
+            else:
+                _print_table("sqlglot", ["sqlglot", "sqlglotc"] + available, results)
+        else:
+            results = {}
+            prefix = _bench_sqlglot(results, mode=mode)
+            if not args.sqlglot_only:
+                available = _bench_third_party(results, mode=mode)
+            else:
+                available = []
+
+            if args.json:
+                with open(args.json, "w") as f:
+                    json.dump(results, f, indent=2)
+            else:
+                _print_table(prefix, [prefix] + available, results)

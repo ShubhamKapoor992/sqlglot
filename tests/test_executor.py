@@ -3,13 +3,14 @@ import csv
 import datetime
 import unittest
 from datetime import date, time
-from multiprocessing import Pool
+from concurrent.futures import ProcessPoolExecutor
 
 import duckdb
 import numpy as np
 import pandas as pd
 from pandas.testing import assert_frame_equal
 
+import sqlglot.generator as _generator_module
 from sqlglot import exp, find_tables, parse_one, transpile
 from sqlglot.errors import ExecuteError
 from sqlglot.executor import execute
@@ -24,6 +25,8 @@ from tests.helpers import (
     TPCDS_SCHEMA,
     load_sql_fixture_pairs,
 )
+
+_GENERATOR_IS_COMPILED = getattr(_generator_module, "__file__", "").endswith(".so")
 
 DIR_TPCH = FIXTURES_DIR + "/optimizer/tpc-h/"
 DIR_TPCDS = FIXTURES_DIR + "/optimizer/tpc-ds/"
@@ -66,6 +69,7 @@ def mp_execute(expression, meta):
 
 
 @unittest.skipIf(SKIP_INTEGRATION, "Skipping Integration Tests since `SKIP_INTEGRATION` is set")
+@unittest.skipIf(_GENERATOR_IS_COMPILED, "executor requires interpreted Generator subclass")
 class TestExecutor(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -158,16 +162,13 @@ class TestExecutor(unittest.TestCase):
             assert_frame_equal(a, b, check_dtype=False, check_index_type=False)
 
     def _mp_execute(self, schema, tables, sqls, tpch):
-        with Pool(
+        with ProcessPoolExecutor(
             initializer=initializer,
             initargs=(schema, tables),
         ) as pool:
-            for i, table in enumerate(
-                pool.starmap(
-                    mp_execute,
-                    ((parse_one(sql), args) for args, sql, _ in sqls),
-                )
-            ):
+            futures = [pool.submit(mp_execute, parse_one(sql), args) for args, sql, _ in sqls]
+            for i, future in enumerate(futures):
+                table = future.result()
                 if table is not None:
                     self.subtestHelper(i, table, tpch=tpch)
 

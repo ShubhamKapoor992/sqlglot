@@ -5,6 +5,7 @@ import typing as t
 from sqlglot import exp, parser
 from sqlglot.helper import seq_get
 from sqlglot.tokens import TokenType
+from collections.abc import Collection
 
 
 def _select_all(table: exp.Expr) -> t.Optional[exp.Select]:
@@ -55,7 +56,13 @@ class PRQLParser(parser.Parser):
     }
 
     def _parse_equality(self) -> t.Optional[exp.Expr]:
-        eq = self._parse_tokens(self._parse_comparison, self.EQUALITY)
+        eq = self._parse_comparison()
+        while self._match_set(self.EQUALITY):
+            comments = self._prev_comments
+            eq = self.expression(
+                self.EQUALITY[self._prev.token_type](this=eq, expression=self._parse_comparison()),
+                comments=comments,
+            )
         if not isinstance(eq, (exp.EQ, exp.NEQ)):
             return eq
 
@@ -165,7 +172,7 @@ class PRQLParser(parser.Parser):
         self,
         schema: bool = False,
         joins: bool = False,
-        alias_tokens: t.Optional[t.Collection[TokenType]] = None,
+        alias_tokens: t.Optional[Collection[TokenType]] = None,
         parse_bracket: bool = False,
         is_db_reference: bool = False,
         parse_partition: bool = False,

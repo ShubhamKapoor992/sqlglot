@@ -69,6 +69,13 @@ class TestSQLite(Validator):
             },
         )
         self.validate_all(
+            "SELECT MAX(a, b) FROM t",
+            read={
+                "postgres": "SELECT GREATEST(a, b) FROM t",
+                "sqlite": "SELECT MAX(a, b) FROM t",
+            },
+        )
+        self.validate_all(
             "SELECT JSON_GROUP_ARRAY(name) FROM t",
             read={
                 "postgres": "SELECT JSON_AGG(name) FROM t",
@@ -140,6 +147,7 @@ class TestSQLite(Validator):
             },
         )
         self.validate_all("x", read={"snowflake": "LEAST(x)"})
+        self.validate_all("x", read={"postgres": "GREATEST(x)"})
         self.validate_all("MIN(x)", read={"snowflake": "MIN(x)"}, write={"snowflake": "MIN(x)"})
         self.validate_all(
             "MIN(x, y, z)",
@@ -280,6 +288,25 @@ class TestSQLite(Validator):
         self.validate_identity("INSERT OR ROLLBACK INTO foo (x, y) VALUES (1, 2)")
         self.validate_identity("CREATE TABLE foo (id INTEGER PRIMARY KEY ASC)")
         self.validate_identity("CREATE TEMPORARY TABLE foo (id INTEGER)")
+        self.validate_identity("CREATE VIRTUAL TABLE docs USING fts5(title, content)")
+        self.validate_identity("CREATE VIRTUAL TABLE IF NOT EXISTS docs USING fts5(title, content)")
+        self.validate_identity("CREATE VIRTUAL TABLE main.docs USING fts5(title, content)")
+        self.validate_identity(
+            "CREATE VIRTUAL TABLE demo_index USING rtree(id, minX, maxX, minY, maxY)"
+        )
+        self.validate_identity("CREATE VIRTUAL TABLE t USING module_name")
+        self.validate_identity("PRAGMA table_info")
+        self.validate_identity("PRAGMA schema")
+        self.validate_identity("PRAGMA full_column_names = on")
+        self.validate_identity("PRAGMA full_column_names = off")
+        self.validate_identity("PRAGMA cache_size = 2000")
+        self.validate_identity("PRAGMA foo = -2000")
+        self.validate_identity("PRAGMA foo(-2000)", "PRAGMA foo = -2000")
+        self.validate_identity("PRAGMA encoding = 'UTF-16'")
+        self.validate_identity("PRAGMA main.cache_size")
+        self.validate_identity("PRAGMA main.cache_size = 2000")
+        self.validate_identity("PRAGMA cache_size(2000)", "PRAGMA cache_size = 2000")
+        self.validate_identity("PRAGMA main.cache_size(2000)", "PRAGMA main.cache_size = 2000")
 
         self.validate_all(
             """

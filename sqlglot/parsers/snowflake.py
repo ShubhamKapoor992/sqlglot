@@ -21,18 +21,7 @@ from sqlglot.tokens import TokenType
 
 if t.TYPE_CHECKING:
     from sqlglot._typing import B, E
-
-
-def _build_strtok(args: t.List) -> exp.SplitPart:
-    # Add default delimiter (space) if missing - per Snowflake docs
-    if len(args) == 1:
-        args.append(exp.Literal.string(" "))
-
-    # Add default part_index (1) if missing
-    if len(args) == 2:
-        args.append(exp.Literal.number(1))
-
-    return exp.SplitPart.from_arg_list(args)
+    from collections.abc import Collection
 
 
 def _build_approx_top_k(args: t.List) -> exp.ApproxTopK:
@@ -68,10 +57,8 @@ TIMESTAMP_TYPES = {
 }
 
 
-def _build_datetime(
-    name: str, kind: exp.DType, safe: bool = False
-) -> t.Callable[[t.List], exp.Func]:
-    def _builder(args: t.List) -> exp.Func:
+def _build_datetime(name: str, kind: exp.DType, safe: bool = False) -> t.Callable[[list], exp.Func]:
+    def _builder(args: list) -> exp.Func:
         value = seq_get(args, 0)
         scale_or_fmt = seq_get(args, 1)
 
@@ -82,7 +69,7 @@ def _build_datetime(
             # Converts calls like `TO_TIME('01:02:03')` into casts
             if len(args) == 1 and value.is_string and not int_value:
                 return (
-                    exp.TryCast(this=value, to=exp.DataType.build(kind), requires_string=True)
+                    exp.TryCast(this=value, to=kind.into_expr(), requires_string=True)
                     if safe
                     else exp.cast(value, kind)
                 )
@@ -277,6 +264,14 @@ def _build_round(args: t.List) -> exp.Round:
     return expression
 
 
+def _build_array_sort(args: t.List) -> exp.SortArray:
+    asc = seq_get(args, 1)
+    nulls_first = seq_get(args, 2)
+    if nulls_first is None and isinstance(asc, exp.Boolean):
+        nulls_first = exp.Boolean(this=not asc.this)
+    return exp.SortArray(this=seq_get(args, 0), asc=asc, nulls_first=nulls_first)
+
+
 def _build_generator(args: t.List) -> exp.Generator:
     """
     Build Generator expression, unwrapping Snowflake's named parameters.
@@ -319,6 +314,7 @@ def _show_parser(*args: t.Any, **kwargs: t.Any) -> t.Callable[[SnowflakeParser],
 
 class SnowflakeParser(parser.Parser):
     IDENTIFY_PIVOT_STRINGS = True
+    TYPED_LAMBDA_ARGS = True
     DEFAULT_SAMPLING_METHOD = "BERNOULLI"
     COLON_IS_VARIANT_EXTRACT = True
     JSON_EXTRACT_REQUIRES_JSON_EXPRESSION = True
@@ -330,11 +326,40 @@ class SnowflakeParser(parser.Parser):
     ID_VAR_TOKENS = {
         *parser.Parser.ID_VAR_TOKENS,
         TokenType.EXCEPT,
+        TokenType.INTEGRATION,
         TokenType.MATCH_CONDITION,
+        TokenType.PACKAGE,
+        TokenType.POLICY,
+        TokenType.POOL,
+        TokenType.ROLE,
+        TokenType.RULE,
+        TokenType.VOLUME,
+    }
+
+    ALIAS_TOKENS = parser.Parser.ALIAS_TOKENS | {
+        TokenType.INTEGRATION,
+        TokenType.PACKAGE,
+        TokenType.POLICY,
+        TokenType.POOL,
+        TokenType.ROLE,
+        TokenType.RULE,
+        TokenType.VOLUME,
     }
 
     TABLE_ALIAS_TOKENS = (
-        parser.Parser.TABLE_ALIAS_TOKENS | {TokenType.ANTI, TokenType.SEMI, TokenType.WINDOW}
+        parser.Parser.TABLE_ALIAS_TOKENS
+        | {
+            TokenType.ANTI,
+            TokenType.INTEGRATION,
+            TokenType.PACKAGE,
+            TokenType.POLICY,
+            TokenType.POOL,
+            TokenType.ROLE,
+            TokenType.RULE,
+            TokenType.SEMI,
+            TokenType.VOLUME,
+            TokenType.WINDOW,
+        }
     ) - {TokenType.MATCH_CONDITION}
 
     COLON_PLACEHOLDER_TOKENS = ID_VAR_TOKENS | {TokenType.NUMBER}
@@ -346,8 +371,21 @@ class SnowflakeParser(parser.Parser):
         TokenType.CURRENT_TIME: exp.Localtime,
     }
 
+    RANGE_PARSERS = {
+        **parser.Parser.RANGE_PARSERS,
+        TokenType.RLIKE: lambda self, this: self.expression(
+            exp.RegexpLike(this=this, expression=self._parse_bitwise(), full_match=True)
+        ),
+    }
+
     FUNCTIONS = {
         **parser.Parser.FUNCTIONS,
+        "CHARINDEX": lambda args: exp.StrPosition(
+            this=seq_get(args, 1),
+            substr=seq_get(args, 0),
+            position=seq_get(args, 2),
+            clamp_position=True,
+        ),
         "ADD_MONTHS": lambda args: exp.AddMonths(
             this=seq_get(args, 0),
             expression=seq_get(args, 1),
@@ -394,8 +432,14 @@ class SnowflakeParser(parser.Parser):
             end=seq_get(args, 2),
             zero_based=True,
         ),
-        "ARRAY_SORT": exp.SortArray.from_arg_list,
+        "ARRAY_SORT": _build_array_sort,
         "ARRAY_FLATTEN": exp.Flatten.from_arg_list,
+        "ARRAY_TO_STRING": lambda args: exp.ArrayToString(
+            this=seq_get(args, 0),
+            expression=seq_get(args, 1),
+            null_is_empty=True,
+            null_delim_is_null=True,
+        ),
         "ARRAYS_OVERLAP": lambda args: exp.ArrayOverlaps(
             this=seq_get(args, 0), expression=seq_get(args, 1), null_safe=True
         ),
@@ -476,6 +520,9 @@ class SnowflakeParser(parser.Parser):
         "LEAST_IGNORE_NULLS": lambda args: exp.Least(
             this=seq_get(args, 0), expressions=args[1:], ignore_nulls=True
         ),
+        "LEFT": lambda args: exp.Left(
+            this=seq_get(args, 0), expression=seq_get(args, 1), negative_length_returns_empty=True
+        ),
         "HEX_DECODE_BINARY": exp.Unhex.from_arg_list,
         "IFF": exp.If.from_arg_list,
         "JAROWINKLER_SIMILARITY": lambda args: exp.JarowinklerSimilarity(
@@ -510,6 +557,9 @@ class SnowflakeParser(parser.Parser):
             upper=exp.Literal.number(9223372036854775807.0),  # 2^63-1 as float
         ),
         "REPLACE": build_replace_with_optional_replacement,
+        "RIGHT": lambda args: exp.Right(
+            this=seq_get(args, 0), expression=seq_get(args, 1), negative_length_returns_empty=True
+        ),
         "RLIKE": _build_regexp_like,
         "ROUND": _build_round,
         "SHA1_BINARY": exp.SHA1Digest.from_arg_list,
@@ -524,7 +574,6 @@ class SnowflakeParser(parser.Parser):
         ),
         "SQUARE": lambda args: exp.Pow(this=seq_get(args, 0), expression=exp.Literal.number(2)),
         "STDDEV_SAMP": exp.Stddev.from_arg_list,
-        "STRTOK": _build_strtok,
         "SYSDATE": lambda args: exp.CurrentTimestamp(this=seq_get(args, 0), sysdate=True),
         "TABLE": lambda args: exp.TableFromRows(this=seq_get(args, 0)),
         "TIMEADD": lambda args: exp.TimeAdd(
@@ -560,9 +609,11 @@ class SnowflakeParser(parser.Parser):
         "TIMESTAMP_FROM_PARTS": _build_timestamp_from_parts,
         "TIMESTAMPNTZFROMPARTS": _build_timestamp_from_parts,
         "TIMESTAMP_NTZ_FROM_PARTS": _build_timestamp_from_parts,
-        "TRUNC": lambda args, dialect: build_trunc(args, dialect, date_trunc_requires_part=False),
+        "TRUNC": lambda args, dialect: build_trunc(
+            args, dialect, date_trunc_requires_part=False, fractions_supported=True
+        ),
         "TRUNCATE": lambda args, dialect: build_trunc(
-            args, dialect, date_trunc_requires_part=False
+            args, dialect, date_trunc_requires_part=False, fractions_supported=True
         ),
         "TRY_DECRYPT": lambda args: exp.Decrypt(
             this=seq_get(args, 0),
@@ -622,12 +673,16 @@ class SnowflakeParser(parser.Parser):
         "TO_TIMESTAMP_LTZ": _build_datetime("TO_TIMESTAMP_LTZ", exp.DType.TIMESTAMPLTZ),
         "TO_TIMESTAMP_NTZ": _build_datetime("TO_TIMESTAMP_NTZ", exp.DType.TIMESTAMPNTZ),
         "TO_TIMESTAMP_TZ": _build_datetime("TO_TIMESTAMP_TZ", exp.DType.TIMESTAMPTZ),
-        "TO_GEOGRAPHY": lambda args: exp.cast(args[0], exp.DType.GEOGRAPHY)
-        if len(args) == 1
-        else exp.Anonymous(this="TO_GEOGRAPHY", expressions=args),
-        "TO_GEOMETRY": lambda args: exp.cast(args[0], exp.DType.GEOMETRY)
-        if len(args) == 1
-        else exp.Anonymous(this="TO_GEOMETRY", expressions=args),
+        "TO_GEOGRAPHY": lambda args: (
+            exp.cast(args[0], exp.DType.GEOGRAPHY)
+            if len(args) == 1
+            else exp.Anonymous(this="TO_GEOGRAPHY", expressions=args)
+        ),
+        "TO_GEOMETRY": lambda args: (
+            exp.cast(args[0], exp.DType.GEOMETRY)
+            if len(args) == 1
+            else exp.Anonymous(this="TO_GEOMETRY", expressions=args)
+        ),
         "TO_VARCHAR": build_timetostr_or_tochar,
         "TO_JSON": exp.JSONFormat.from_arg_list,
         "VECTOR_COSINE_SIMILARITY": exp.CosineDistance.from_arg_list,
@@ -646,7 +701,13 @@ class SnowflakeParser(parser.Parser):
             part_index_zero_as_one=True,
             empty_delimiter_returns_whole=True,
         ),
+        "STRTOK": lambda args: exp.Strtok(
+            this=seq_get(args, 0),
+            delimiter=seq_get(args, 1) or exp.Literal.string(" "),
+            part_index=seq_get(args, 2) or exp.Literal.number("1"),
+        ),
         "SYSTIMESTAMP": exp.CurrentTimestamp.from_arg_list,
+        "UNICODE": lambda args: exp.Unicode(this=seq_get(args, 0), empty_is_zero=True),
         "WEEKISO": exp.WeekOfYear.from_arg_list,
         "WEEKOFYEAR": exp.Week.from_arg_list,
     }
@@ -690,8 +751,37 @@ class SnowflakeParser(parser.Parser):
         "FILE_FORMAT": lambda self: self._parse_file_format_property(),
         "LOCATION": lambda self: self._parse_location_property(),
         "TAG": lambda self: self._parse_tag(),
-        "USING": lambda self: self._match_text_seq("TEMPLATE")
-        and self.expression(exp.UsingTemplateProperty(this=self._parse_statement())),
+        "USING": lambda self: (
+            self._match_text_seq("TEMPLATE")
+            and self.expression(exp.UsingTemplateProperty(this=self._parse_statement()))
+        ),
+    }
+
+    DESCRIBE_QUALIFIER_PARSERS: t.ClassVar[t.Dict[str, t.Callable]] = {
+        "API": lambda self: self.expression(exp.ApiProperty()),
+        "APPLICATION": lambda self: self.expression(exp.ApplicationProperty()),
+        "CATALOG": lambda self: self.expression(exp.CatalogProperty()),
+        "COMPUTE": lambda self: self.expression(exp.ComputeProperty()),
+        "DATABASE": lambda self: (
+            self.expression(exp.DatabaseProperty())
+            if self._curr and self._curr.text.upper() == "ROLE"
+            else None
+        ),
+        "DYNAMIC": lambda self: self.expression(exp.DynamicProperty()),
+        "EXTERNAL": lambda self: self.expression(exp.ExternalProperty()),
+        "HYBRID": lambda self: self.expression(exp.HybridProperty()),
+        "ICEBERG": lambda self: self.expression(exp.IcebergProperty()),
+        "MASKING": lambda self: self.expression(exp.MaskingProperty()),
+        "MATERIALIZED": lambda self: self.expression(exp.MaterializedProperty()),
+        "NETWORK": lambda self: self.expression(exp.NetworkProperty()),
+        "ROW": lambda self: (
+            self.expression(exp.RowAccessProperty()) if self._match_text_seq("ACCESS") else None
+        ),
+        "SECURITY": lambda self: (
+            self.expression(exp.SecurityIntegrationProperty())
+            if self._curr and self._curr.text.upper() == "INTEGRATION"
+            else None
+        ),
     }
 
     TYPE_CONVERTERS = {
@@ -701,31 +791,34 @@ class SnowflakeParser(parser.Parser):
 
     SHOW_PARSERS = {
         "DATABASES": _show_parser("DATABASES"),
-        "TERSE DATABASES": _show_parser("DATABASES"),
         "SCHEMAS": _show_parser("SCHEMAS"),
-        "TERSE SCHEMAS": _show_parser("SCHEMAS"),
         "OBJECTS": _show_parser("OBJECTS"),
-        "TERSE OBJECTS": _show_parser("OBJECTS"),
         "TABLES": _show_parser("TABLES"),
-        "TERSE TABLES": _show_parser("TABLES"),
         "VIEWS": _show_parser("VIEWS"),
-        "TERSE VIEWS": _show_parser("VIEWS"),
         "PRIMARY KEYS": _show_parser("PRIMARY KEYS"),
-        "TERSE PRIMARY KEYS": _show_parser("PRIMARY KEYS"),
         "IMPORTED KEYS": _show_parser("IMPORTED KEYS"),
-        "TERSE IMPORTED KEYS": _show_parser("IMPORTED KEYS"),
         "UNIQUE KEYS": _show_parser("UNIQUE KEYS"),
-        "TERSE UNIQUE KEYS": _show_parser("UNIQUE KEYS"),
         "SEQUENCES": _show_parser("SEQUENCES"),
-        "TERSE SEQUENCES": _show_parser("SEQUENCES"),
         "STAGES": _show_parser("STAGES"),
         "COLUMNS": _show_parser("COLUMNS"),
         "USERS": _show_parser("USERS"),
-        "TERSE USERS": _show_parser("USERS"),
         "FILE FORMATS": _show_parser("FILE FORMATS"),
         "FUNCTIONS": _show_parser("FUNCTIONS"),
         "PROCEDURES": _show_parser("PROCEDURES"),
         "WAREHOUSES": _show_parser("WAREHOUSES"),
+        "ICEBERG TABLES": _show_parser("TABLES", iceberg=True),
+        "TERSE ICEBERG TABLES": _show_parser("TABLES", terse=True, iceberg=True),
+        "TERSE DATABASES": _show_parser("DATABASES", terse=True),
+        "TERSE SCHEMAS": _show_parser("SCHEMAS", terse=True),
+        "TERSE OBJECTS": _show_parser("OBJECTS", terse=True),
+        "TERSE TABLES": _show_parser("TABLES", terse=True),
+        "TERSE VIEWS": _show_parser("VIEWS", terse=True),
+        "TERSE SEQUENCES": _show_parser("SEQUENCES", terse=True),
+        "TERSE USERS": _show_parser("USERS", terse=True),
+        # TERSE has no semantic effect for KEYS, so we do not set the terse AST arg
+        "TERSE PRIMARY KEYS": _show_parser("PRIMARY KEYS"),
+        "TERSE IMPORTED KEYS": _show_parser("IMPORTED KEYS"),
+        "TERSE UNIQUE KEYS": _show_parser("UNIQUE KEYS"),
     }
 
     SHOW_TRIE = new_trie(key.split(" ") for key in SHOW_PARSERS)
@@ -750,6 +843,17 @@ class SnowflakeParser(parser.Parser):
 
     NON_TABLE_CREATABLES = {"STORAGE INTEGRATION", "TAG", "WAREHOUSE", "STREAMLIT"}
 
+    CREATABLES = {
+        *parser.Parser.CREATABLES,
+        TokenType.INTEGRATION,
+        TokenType.PACKAGE,
+        TokenType.POLICY,
+        TokenType.POOL,
+        TokenType.ROLE,
+        TokenType.RULE,
+        TokenType.VOLUME,
+    }
+
     LAMBDAS = {
         **parser.Parser.LAMBDAS,
         TokenType.ARROW: lambda self, expressions: self.expression(
@@ -772,8 +876,34 @@ class SnowflakeParser(parser.Parser):
 
     def _parse_directory(self) -> exp.DirectoryStage:
         table = self._parse_table_parts()
-        this: exp.Expr = table.this if isinstance(table, exp.Table) else table
+        this = table.this if isinstance(table, exp.Table) else table
         return self.expression(exp.DirectoryStage(this=this))
+
+    def _parse_describe(self) -> exp.Describe:
+        index = self._index
+
+        if self._match_texts(self.DESCRIBE_QUALIFIER_PARSERS):
+            qualifier = self.DESCRIBE_QUALIFIER_PARSERS[self._prev.text.upper()](self)
+
+            if qualifier:
+                kind = self._match_set(self.CREATABLES) and self._prev.text.upper()
+
+                if kind:
+                    this = self._parse_table(schema=True)
+                    properties = self.expression(exp.Properties(expressions=[qualifier]))
+                    post_props = self._parse_properties()
+                    expressions = post_props.expressions if post_props else None
+                    return self.expression(
+                        exp.Describe(
+                            this=this,
+                            kind=kind,
+                            properties=properties,
+                            expressions=expressions,
+                        )
+                    )
+
+        self._retreat(index)
+        return super()._parse_describe()
 
     def _parse_use(self) -> exp.Use:
         if self._match_text_seq("SECONDARY", "ROLES"):
@@ -880,8 +1010,12 @@ class SnowflakeParser(parser.Parser):
         return lateral
 
     def _parse_table_parts(
-        self, schema: bool = False, is_db_reference: bool = False, wildcard: bool = False
-    ) -> exp.Table:
+        self,
+        schema: bool = False,
+        is_db_reference: bool = False,
+        wildcard: bool = False,
+        fast: bool = False,
+    ) -> t.Optional[exp.Table | exp.Dot]:
         # https://docs.snowflake.com/en/user-guide/querying-stage
         if self._match(TokenType.STRING, advance=False):
             table = self._parse_string()
@@ -909,7 +1043,11 @@ class SnowflakeParser(parser.Parser):
 
             table = self.expression(exp.Table(this=table, format=file_format, pattern=pattern))
         else:
-            table = super()._parse_table_parts(schema=schema, is_db_reference=is_db_reference)
+            table = super()._parse_table_parts(
+                schema=schema,
+                is_db_reference=is_db_reference,
+                fast=fast,
+            )
 
         return table
 
@@ -917,7 +1055,7 @@ class SnowflakeParser(parser.Parser):
         self,
         schema: bool = False,
         joins: bool = False,
-        alias_tokens: t.Optional[t.Collection[TokenType]] = None,
+        alias_tokens: t.Optional[Collection[TokenType]] = None,
         parse_bracket: bool = False,
         is_db_reference: bool = False,
         parse_partition: bool = False,
@@ -944,7 +1082,7 @@ class SnowflakeParser(parser.Parser):
     def _parse_id_var(
         self,
         any_token: bool = True,
-        tokens: t.Optional[t.Collection[TokenType]] = None,
+        tokens: t.Optional[Collection[TokenType]] = None,
     ) -> t.Optional[exp.Expr]:
         if self._match_text_seq("IDENTIFIER", "("):
             identifier = (
@@ -955,13 +1093,11 @@ class SnowflakeParser(parser.Parser):
 
         return super()._parse_id_var(any_token=any_token, tokens=tokens)
 
-    def _parse_show_snowflake(self, this: str) -> exp.Show:
+    def _parse_show_snowflake(
+        self, this: str, terse: bool = False, iceberg: bool = False
+    ) -> exp.Show:
         scope = None
         scope_kind = None
-
-        # will identity SHOW TERSE SCHEMAS but not SHOW TERSE PRIMARY KEYS
-        # which is syntactically valid but has no effect on the output
-        terse = self._tokens[self._index - 2].text.upper() == "TERSE"
 
         history = self._match_text_seq("HISTORY")
 
@@ -989,6 +1125,7 @@ class SnowflakeParser(parser.Parser):
         return self.expression(
             exp.Show(
                 terse=terse,
+                iceberg=iceberg,
                 this=this,
                 history=history,
                 like=like,
@@ -1116,6 +1253,11 @@ class SnowflakeParser(parser.Parser):
                 if isinstance(expr, exp.SetItem):
                     expr.set("kind", "VARIABLE")
         return set
+
+    def _parse_position(self, haystack_first: bool = False) -> exp.StrPosition:
+        result = super()._parse_position(haystack_first)
+        result.set("clamp_position", True)
+        return result
 
     def _parse_window(
         self, this: t.Optional[exp.Expr], alias: bool = False

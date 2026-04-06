@@ -13,15 +13,17 @@ from sqlglot.dialects.dialect import (
 )
 from sqlglot.helper import seq_get
 from sqlglot.tokens import Token, TokenType
+from builtins import type as Type
 
 if t.TYPE_CHECKING:
     from sqlglot._typing import E
+    from collections.abc import Mapping, Sequence, Collection
 
 
 def _build_datetime_format(
-    expr_type: t.Type[E],
-) -> t.Callable[[t.List], E]:
-    def _builder(args: t.List) -> E:
+    expr_type: Type[E],
+) -> t.Callable[[list], E]:
+    def _builder(args: list) -> E:
         expr = build_formatted_time(expr_type, "clickhouse")(args)
 
         timezone = seq_get(args, 2)
@@ -33,28 +35,28 @@ def _build_datetime_format(
     return _builder
 
 
-def _build_count_if(args: t.List) -> exp.CountIf | exp.CombinedAggFunc:
+def _build_count_if(args: list) -> exp.CountIf | exp.CombinedAggFunc:
     if len(args) == 1:
         return exp.CountIf(this=seq_get(args, 0))
 
     return exp.CombinedAggFunc(this="countIf", expressions=args)
 
 
-def _build_str_to_date(args: t.List) -> exp.Cast | exp.Anonymous:
+def _build_str_to_date(args: list) -> exp.Cast | exp.Anonymous:
     if len(args) == 3:
         return exp.Anonymous(this="STR_TO_DATE", expressions=args)
 
     strtodate = exp.StrToDate.from_arg_list(args)
-    return exp.cast(strtodate, exp.DataType.build(exp.DType.DATETIME))
+    return exp.cast(strtodate, exp.DType.DATETIME.into_expr())
 
 
-def _build_timestamp_trunc(unit: str) -> t.Callable[[t.List], exp.TimestampTrunc]:
+def _build_timestamp_trunc(unit: str) -> t.Callable[[list], exp.TimestampTrunc]:
     return lambda args: exp.TimestampTrunc(
         this=seq_get(args, 0), unit=exp.var(unit), zone=seq_get(args, 1)
     )
 
 
-def _build_split_by_char(args: t.List) -> exp.Split | exp.Anonymous:
+def _build_split_by_char(args: list) -> exp.Split | exp.Anonymous:
     sep = seq_get(args, 0)
     if isinstance(sep, exp.Literal):
         sep_value = sep.to_py()
@@ -64,7 +66,7 @@ def _build_split_by_char(args: t.List) -> exp.Split | exp.Anonymous:
     return exp.Anonymous(this="splitByChar", expressions=args)
 
 
-def _build_split(exp_class: t.Type[E]) -> t.Callable[[t.List], E]:
+def _build_split(exp_class: Type[E]) -> t.Callable[[t.List], E]:
     return lambda args: exp_class(
         this=seq_get(args, 1), expression=seq_get(args, 0), limit=seq_get(args, 2)
     )
@@ -228,7 +230,7 @@ AGG_FUNCTIONS_SUFFIXES: t.List[str] = sorted(
 )
 
 # Memoized examples of all 0- and 1-suffix aggregate function names
-AGG_FUNC_MAPPING: t.Mapping[str, t.Tuple[str, str | None]] = {
+AGG_FUNC_MAPPING: Mapping[str, tuple[str, str | None]] = {
     f"{f}{sfx}": (f, sfx) for sfx in AGG_FUNCTIONS_SUFFIXES for f in AGG_FUNCTIONS
 } | {f: (f, None) for f in AGG_FUNCTIONS}
 
@@ -328,7 +330,7 @@ class ClickHouseParser(parser.Parser):
     AGG_FUNC_MAPPING = AGG_FUNC_MAPPING
 
     @classmethod
-    def _resolve_clickhouse_agg(cls, name: str) -> t.Optional[t.Tuple[str, t.Sequence[str]]]:
+    def _resolve_clickhouse_agg(cls, name: str) -> t.Optional[tuple[str, Sequence[str]]]:
         # ClickHouse allows chaining multiple combinators on aggregate functions.
         # See https://clickhouse.com/docs/sql-reference/aggregate-functions/combinators
         # N.B. this resolution allows any suffix stack, including ones that ClickHouse rejects
@@ -371,6 +373,7 @@ class ClickHouseParser(parser.Parser):
     PROPERTY_PARSERS = {
         **{k: v for k, v in parser.Parser.PROPERTY_PARSERS.items() if k != "DYNAMIC"},
         "ENGINE": lambda self: self._parse_engine_property(),
+        "UUID": lambda self: self.expression(exp.UuidProperty(this=self._parse_string())),
     }
 
     NO_PAREN_FUNCTION_PARSERS = {
@@ -456,7 +459,7 @@ class ClickHouseParser(parser.Parser):
         TokenType.DETACH: lambda self: self._parse_detach(),
     }
 
-    def _parse_wrapped_select_or_assignment(self) -> t.Optional[exp.Expression]:
+    def _parse_wrapped_select_or_assignment(self) -> t.Optional[exp.Expr]:
         return self._parse_wrapped(
             lambda: self._parse_select() or self._parse_assignment(), optional=True
         )
@@ -561,9 +564,7 @@ class ClickHouseParser(parser.Parser):
                     this=exp.DType.ARRAY,
                     expressions=[
                         bracket_json_type
-                        or exp.DataType.build(
-                            dtype=exp.DType.JSON, dialect=self.dialect, nullable=False
-                        )
+                        or exp.DType.JSON.into_expr(dialect=self.dialect, nullable=False)
                     ],
                     nested=True,
                 )
@@ -599,7 +600,7 @@ class ClickHouseParser(parser.Parser):
         self,
         schema: bool = False,
         joins: bool = False,
-        alias_tokens: t.Optional[t.Collection[TokenType]] = None,
+        alias_tokens: t.Optional[Collection[TokenType]] = None,
         parse_bracket: bool = False,
         is_db_reference: bool = False,
         parse_partition: bool = False,
@@ -693,7 +694,7 @@ class ClickHouseParser(parser.Parser):
             params = self._parse_func_params(anon_func)
 
             if len(parts[1]) > 0:
-                exp_class: t.Type[exp.Expr] = (
+                exp_class: Type[exp.Expr] = (
                     exp.CombinedParameterizedAgg if params else exp.CombinedAggFunc
                 )
             else:

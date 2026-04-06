@@ -378,11 +378,18 @@ class BigQueryParser(parser.Parser):
         return this
 
     def _parse_table_parts(
-        self, schema: bool = False, is_db_reference: bool = False, wildcard: bool = False
-    ) -> exp.Table:
+        self,
+        schema: bool = False,
+        is_db_reference: bool = False,
+        wildcard: bool = False,
+        fast: bool = False,
+    ) -> t.Optional[exp.Table | exp.Dot]:
         table = super()._parse_table_parts(
-            schema=schema, is_db_reference=is_db_reference, wildcard=True
+            schema=schema, is_db_reference=is_db_reference, wildcard=True, fast=fast
         )
+
+        if not isinstance(table, exp.Table):
+            return table
 
         # proj-1.db.tbl -- `1.` is tokenized as a float so we need to unravel it here
         if not table.catalog:
@@ -515,13 +522,15 @@ class BigQueryParser(parser.Parser):
             for expression in bracket.expressions:
                 name = expression.name.upper()
 
-                if name not in self.BRACKET_OFFSETS:
+                expressions = expression.expressions
+
+                if name not in self.BRACKET_OFFSETS or not expressions:
                     break
 
                 offset, safe = self.BRACKET_OFFSETS[name]
                 bracket.set("offset", offset)
                 bracket.set("safe", safe)
-                expression.replace(expression.expressions[0])
+                expression.replace(expressions[0])
 
         return bracket
 
@@ -647,7 +656,7 @@ class BigQueryParser(parser.Parser):
             exp.Export(
                 connection=self._match_text_seq("WITH", "CONNECTION") and self._parse_table_parts(),
                 options=self._parse_properties(),
-                this=self._match_text_seq("AS") and self._parse_select(),
+                this=self._match_text_seq("AS") and self._parse_select(nested=True),
             )
         )
 
