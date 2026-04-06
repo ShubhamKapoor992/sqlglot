@@ -57,22 +57,6 @@ class TestDB2(Validator):
             },
         )
 
-        # Test CAST to CHAR
-        self.validate_all(
-            "CAST(value AS CHAR)",
-            write={
-                "db2": "CHAR(value)",
-            },
-        )
-
-        # Test date arithmetic - skip for now as it needs more complex handling
-        # self.validate_all(
-        #     "SELECT date_col + INTERVAL '5' DAY",
-        #     write={
-        #         "db2": "SELECT date_col + 5 DAY",
-        #     },
-        # )
-
         # Test DAYOFWEEK and DAYOFYEAR extracts
         self.validate_all(
             "SELECT EXTRACT(DAYOFWEEK FROM date_col)",

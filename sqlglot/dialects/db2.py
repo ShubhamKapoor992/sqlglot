@@ -141,70 +141,29 @@ class Db2(Dialect):
             exp.Min: min_or_least,
             exp.Pivot: no_pivot_sql,
             exp.Select: transforms.preprocess([transforms.eliminate_distinct_on]),
-            exp.StrPosition: lambda self, e: self.func("POSSTR", e.this, e.args.get("substr")),
-            exp.TimeToStr: lambda self, e: self.func("VARCHAR_FORMAT", e.this, self.format_time(e)),
+            exp.StrPosition: rename_func("POSSTR"),
+            exp.TimeToStr: rename_func("VARCHAR_FORMAT"),
             exp.TryCast: no_trycast_sql,
             exp.Trim: trim_sql,
         }
-
-        def offset_sql(self, expression: exp.Offset) -> str:
-            # DB2 uses OFFSET ... ROWS syntax
-            return f"{super().offset_sql(expression)} ROWS"
-
-        def fetch_sql(self, expression: exp.Fetch) -> str:
-            # DB2 uses FETCH FIRST ... ROWS ONLY syntax
-            count = expression.args.get("count")
-            if count:
-                return f" FETCH FIRST {self.sql(count)} ROWS ONLY"
-            return " FETCH FIRST ROW ONLY"
-
-        def currenttimestamp_sql(self, expression: exp.CurrentTimestamp) -> str:
-            return "CURRENT TIMESTAMP"
-
-        def currentdate_sql(self, expression: exp.CurrentDate) -> str:
-            return "CURRENT DATE"
-
-        def boolean_sql(self, expression: exp.Boolean) -> str:
-            # DB2 doesn't have native boolean, use 0/1
-            return "1" if expression.this else "0"
-
-        def datatype_sql(self, expression: exp.DataType) -> str:
-            # Handle DB2 specific data types
-            if expression.this == exp.DataType.Type.DECIMAL:
-                precision = expression.args.get("expressions")
-                if precision:
-                    return f"DECIMAL({self.expressions(expression, flat=True)})"
-                return "DECIMAL(31, 0)"
-
-            return super().datatype_sql(expression)
-
-        def cast_sql(self, expression: exp.Cast, safe_prefix: t.Optional[str] = None) -> str:
-            # DB2 uses different CAST syntax for some types
-            to_type = expression.to
-
-            if to_type.this == exp.DataType.Type.CHAR:
-                # DB2 CHAR casting
-                return f"CHAR({self.sql(expression.this)})"
-
-            return super().cast_sql(expression, safe_prefix=safe_prefix)
 
         def extract_sql(self, expression: exp.Extract) -> str:
             this = self.sql(expression, "this")
             expression_sql = self.sql(expression, "expression")
 
-            # DB2 uses different function names for some extracts
-            if this.upper() == "DAYOFWEEK":
-                return f"DAYOFWEEK({expression_sql})"
-            elif this.upper() == "DAYOFYEAR":
-                return f"DAYOFYEAR({expression_sql})"
+            if this.upper() in ("DAYOFWEEK", "DAYOFYEAR"):
+                return f"{this.upper()}({expression_sql})"
 
             return f"EXTRACT({this} FROM {expression_sql})"
 
-        def concat_sql(self, expression: exp.Concat) -> str:
-            # DB2 uses CONCAT function or || operator
-            expressions = expression.expressions
-            if len(expressions) == 2:
-                return f"{self.sql(expressions[0])} || {self.sql(expressions[1])}"
+        def offset_sql(self, expression: exp.Offset) -> str:
+            return f"{super().offset_sql(expression)} ROWS"
 
-            # For multiple arguments, use nested CONCAT or multiple ||
-            return " || ".join(self.sql(e) for e in expressions)
+        def fetch_sql(self, expression: exp.Fetch) -> str:
+            count = expression.args.get("count")
+            if count:
+                return f" FETCH FIRST {self.sql(count)} ROWS ONLY"
+            return " FETCH FIRST ROW ONLY"
+
+        def boolean_sql(self, expression: exp.Boolean) -> str:
+            return "1" if expression.this else "0"
