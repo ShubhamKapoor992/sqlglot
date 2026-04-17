@@ -11,7 +11,11 @@ class Db2(generator.Generator):
         exp.DType.NVARCHAR: "NVARCHAR",
     }
 
-    AFTER_HAVING_MODIFIER_TRANSFORMS = generator.AFTER_HAVING_MODIFIER_TRANSFORMS
+    AFTER_HAVING_MODIFIER_TRANSFORMS = {
+        "cluster": lambda self, e: "",
+        "distribute": lambda self, e: "",
+        "sort": lambda self, e: "",
+    }
 
     TRANSFORMS = {
         **generator.Generator.TRANSFORMS,
