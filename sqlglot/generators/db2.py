@@ -50,8 +50,8 @@ class Db2(generator.Generator):
         exp.DType.BINARY: "BLOB",
         exp.DType.VARBINARY: "BLOB",
         exp.DType.TEXT: "CLOB",
-        exp.DType.NCHAR: "GRAPHIC",
-        exp.DType.NVARCHAR: "VARGRAPHIC",
+        exp.DType.NCHAR: "NCHAR",
+        exp.DType.NVARCHAR: "NVARCHAR",
         exp.DType.TIMESTAMPTZ: "TIMESTAMP",
         exp.DType.DATETIME: "TIMESTAMP",
     }
