@@ -400,6 +400,9 @@ class Dialect(metaclass=_Dialect):
     CONCAT_COALESCE = False
     """A `NULL` arg in `CONCAT` yields `NULL` by default, but in some dialects it yields an empty string."""
 
+    CONCAT_WS_COALESCE = False
+    """A `NULL` arg in `CONCAT_WS` yields `NULL` by default, but in some dialects it is skipped."""
+
     HEX_LOWERCASE = False
     """Whether the `HEX` function returns a lowercase hexadecimal string."""
 
@@ -1217,7 +1220,9 @@ def inline_array_unless_query(self: Generator, expression: exp.Expr) -> str:
 def no_ilike_sql(self: Generator, expression: exp.ILike) -> str:
     return self.like_sql(
         exp.Like(
-            this=exp.Lower(this=expression.this), expression=exp.Lower(this=expression.expression)
+            this=exp.Lower(this=expression.this),
+            expression=exp.Lower(this=expression.expression),
+            negate=expression.args.get("negate"),
         )
     )
 
@@ -1599,6 +1604,7 @@ def build_date_delta(
 
 def build_date_delta_with_interval(
     expression_class: Type[E],
+    default_unit: str | None = None,
 ) -> t.Callable[[BuilderArgs], E | None]:
     def _builder(args: BuilderArgs) -> E | None:
         if len(args) < 2:
@@ -1607,7 +1613,13 @@ def build_date_delta_with_interval(
         interval = args[1]
 
         if not isinstance(interval, exp.Interval):
-            raise ParseError(f"INTERVAL expression expected but got '{interval}'")
+            if default_unit is None:
+                raise ParseError(f"INTERVAL expression expected but got '{interval}'")
+            return expression_class(
+                this=args[0],
+                expression=interval,
+                unit=exp.Literal.string(default_unit),
+            )
 
         return expression_class(this=args[0], expression=interval.this, unit=unit_to_str(interval))
 
@@ -1755,14 +1767,15 @@ def count_if_to_sum(self: Generator, expression: exp.CountIf) -> str:
 
 
 def trim_sql(self: Generator, expression: exp.Trim, default_trim_type: str = "") -> str:
-    target = self.sql(expression, "this")
-    trim_type = self.sql(expression, "position") or default_trim_type
     remove_chars = self.sql(expression, "expression")
-    collation = self.sql(expression, "collation")
 
     # Use TRIM/LTRIM/RTRIM syntax if the expression isn't database-specific
     if not remove_chars:
         return self.trim_sql(expression)
+
+    target = self.sql(expression, "this")
+    trim_type = self.sql(expression, "position") or default_trim_type
+    collation = self.sql(expression, "collation")
 
     trim_type = f"{trim_type} " if trim_type else ""
     remove_chars = f"{remove_chars} " if remove_chars else ""
@@ -1821,7 +1834,7 @@ def pivot_column_names(aggregations: Iterable[exp.Expr], dialect: DialectType) -
             be quoted in the base parser's `_parse_pivot` method, due to `to_identifier`.
             Otherwise, we'd end up with `col_avg(`foo`)` (notice the double quotes).
             """
-            agg_all_unquoted = agg.transform(
+            agg_all_unquoted: exp.Expr = agg.transform(
                 lambda node: (
                     exp.Identifier(this=node.name, quoted=False)
                     if isinstance(node, exp.Identifier)
@@ -2230,7 +2243,7 @@ def build_default_decimal_type(
             return dtype
 
         params = f"{precision}{f', {scale}' if scale is not None else ''}"
-        return exp.DataType.build(f"DECIMAL({params})")
+        return exp.DataType.from_str(f"DECIMAL({params})")
 
     return _builder
 

@@ -148,6 +148,10 @@ class Nullif(Expression, Func):
     arg_types = {"this": True, "expression": True}
 
 
+class ObjectTransform(Expression, Func):
+    arg_types = {"this": True, "keep": False, "set_": False}
+
+
 class Nvl2(Expression, Func):
     arg_types = {"this": True, "true": True, "false": False}
 
@@ -319,6 +323,24 @@ class SessionUser(Expression, Func):
 class AIClassify(Expression, Func):
     arg_types = {"this": True, "categories": True, "config": False}
     _sql_names = ["AI_CLASSIFY"]
+
+
+class AIEmbed(Expression, Func):
+    arg_types = {"expressions": True}
+    is_var_len_args = True
+    _sql_names = ["AI_EMBED"]
+
+
+class AISimilarity(Expression, Func):
+    arg_types = {"expressions": True}
+    is_var_len_args = True
+    _sql_names = ["AI_SIMILARITY"]
+
+
+class AIGenerate(Expression, Func):
+    arg_types = {"expressions": True}
+    is_var_len_args = True
+    _sql_names = ["AI_GENERATE"]
 
 
 class FeaturesAtTime(Expression, Func):

@@ -232,6 +232,7 @@ class BigQueryGenerator(generator.Generator):
     COLLATE_IS_FUNC = True
     LIMIT_ONLY_LITERALS = True
     SUPPORTS_TABLE_ALIAS_COLUMNS = False
+    SUPPORTS_NAMED_CTE_COLUMNS = False
     UNPIVOT_ALIASES_ARE_IDENTIFIERS = False
     JSON_KEY_VALUE_PAIR_SEP = ","
     NULL_ORDERING_SUPPORTED: bool | None = False
@@ -272,6 +273,9 @@ class BigQueryGenerator(generator.Generator):
 
     TRANSFORMS = {
         **generator.Generator.TRANSFORMS,
+        exp.AIEmbed: rename_func("EMBED"),
+        exp.AIGenerate: rename_func("GENERATE"),
+        exp.AISimilarity: rename_func("SIMILARITY"),
         exp.ApproxTopK: rename_func("APPROX_TOP_COUNT"),
         exp.ApproxDistinct: rename_func("APPROX_COUNT_DISTINCT"),
         exp.ArgMax: arg_max_or_min_no_count("MAX_BY"),

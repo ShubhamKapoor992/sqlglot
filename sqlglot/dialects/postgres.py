@@ -11,6 +11,7 @@ class Postgres(Dialect):
     INDEX_OFFSET = 1
     TYPED_DIVISION = True
     CONCAT_COALESCE = True
+    CONCAT_WS_COALESCE = True
     NULL_ORDERING = "nulls_are_large"
     TIME_FORMAT = "'YYYY-MM-DD HH24:MI:SS'"
     TABLESAMPLE_SIZE_IS_PERCENT = True
@@ -97,6 +98,7 @@ class Postgres(Dialect):
             "SERIAL": TokenType.SERIAL,
             "SMALLSERIAL": TokenType.SMALLSERIAL,
             "TEMP": TokenType.TEMPORARY,
+            "TYPE": TokenType.TYPE,
             "REGCLASS": TokenType.OBJECT_IDENTIFIER,
             "REGCOLLATION": TokenType.OBJECT_IDENTIFIER,
             "REGCONFIG": TokenType.OBJECT_IDENTIFIER,

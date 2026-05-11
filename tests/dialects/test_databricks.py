@@ -386,7 +386,7 @@ class TestDatabricks(Validator):
             "SELECT DATEADD(year, 1, '2020-01-01')",
             write={
                 "tsql": "SELECT DATEADD(YEAR, 1, '2020-01-01')",
-                "databricks": "SELECT DATEADD(YEAR, 1, '2020-01-01')",
+                "databricks": "SELECT DATE_ADD(YEAR, 1, '2020-01-01')",
             },
         )
         self.validate_all(
@@ -396,9 +396,14 @@ class TestDatabricks(Validator):
         self.validate_all(
             "SELECT DATE_ADD('2020-01-01', 1)",
             write={
-                "tsql": "SELECT DATEADD(DAY, 1, '2020-01-01')",
-                "databricks": "SELECT DATEADD(DAY, 1, '2020-01-01')",
+                "tsql": "SELECT DATEADD(DAY, 1, CAST(CAST('2020-01-01' AS DATETIME2) AS DATE))",
+                "databricks": "SELECT DATE_ADD('2020-01-01', 1)",
             },
+        )
+        self.validate_identity("SELECT DATE_ADD(MONTH, 1, '2020-01-01')")
+        self.validate_identity(
+            "SELECT DATEADD(e, 24) FROM t",
+            "SELECT DATE_ADD(e, 24) FROM t",
         )
 
     def test_without_as(self):
@@ -489,6 +494,37 @@ class TestDatabricks(Validator):
         )
         self.validate_identity(
             "SELECT OVERLAY('Spark SQL' PLACING 'ANSI ' FROM 7 FOR 0)",
+        )
+
+    def test_set_variable(self):
+        self.validate_identity("SET VAR v = 5", "SET VARIABLE v = 5")
+        self.validate_identity("SET VARIABLE v = 5")
+        self.validate_identity("SET VARIABLE v1 = 1, v2 = '2'")
+        self.validate_identity("SET VARIABLE (v1, v2) = (SELECT 1, 2)")
+        self.validate_identity("SET VARIABLE v = (SELECT MAX(c1) FROM VALUES (1), (2) AS T(c1))")
+        self.validate_identity("SET VARIABLE v = DEFAULT")
+
+    def test_iff(self):
+        # IFF is a synonym for IF in Databricks; it normalizes to IF on output
+        self.validate_all(
+            "SELECT IF(x > 0, 'positive', 'non-positive')",
+            read={"databricks": "SELECT IFF(x > 0, 'positive', 'non-positive')"},
+            write={
+                "databricks": "SELECT IF(x > 0, 'positive', 'non-positive')",
+                "snowflake": "SELECT IFF(x > 0, 'positive', 'non-positive')",
+            },
+        )
+
+    def test_try_divide(self):
+        self.validate_all(
+            "SELECT TRY_DIVIDE(a, b)",
+            read={"databricks": "SELECT TRY_DIVIDE(a, b)"},
+            write={
+                "databricks": "SELECT TRY_DIVIDE(a, b)",
+                "snowflake": "SELECT IFF(b <> 0, a / b, NULL)",
+                "duckdb": "SELECT CASE WHEN b <> 0 THEN a / b ELSE NULL END",
+                "spark": "SELECT TRY_DIVIDE(a, b)",
+            },
         )
 
     def test_declare(self):

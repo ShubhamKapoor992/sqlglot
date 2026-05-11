@@ -103,13 +103,13 @@ def _build_datetime(name: str, kind: exp.DType, safe: bool = False) -> t.Callabl
                     # format strings (e.g., TO_TIMESTAMP('20240115', 'YYYYMMDD')) should
                     # use StrToTime, not UnixToTime.
                     unix_expr = exp.UnixToTime(this=value, scale=scale_or_fmt)
-                    unix_expr.set("target_type", exp.DataType.build(kind, dialect="snowflake"))
+                    unix_expr.set("target_type", kind.into_expr())
                     return unix_expr
                 if scale_or_fmt and not int_scale_or_fmt:
                     # Format string provided (e.g., 'YYYY-MM-DD'), use StrToTime
                     strtotime_expr = build_formatted_time(exp.StrToTime, "snowflake")(args)
                     strtotime_expr.set("safe", safe)
-                    strtotime_expr.set("target_type", exp.DataType.build(kind, dialect="snowflake"))
+                    strtotime_expr.set("target_type", kind.into_expr())
                     return strtotime_expr
 
         # Handle DATE/TIME with format strings - allow int_value if a format string is provided
@@ -534,11 +534,13 @@ class SnowflakeParser(parser.Parser):
             this=seq_get(args, 0), expression=seq_get(args, 1), negative_length_returns_empty=True
         ),
         "HEX_DECODE_BINARY": exp.Unhex.from_arg_list,
+        "HEX_ENCODE": exp.Hex.from_arg_list,
         "IFF": exp.If.from_arg_list,
         "JAROWINKLER_SIMILARITY": lambda args: exp.JarowinklerSimilarity(
             this=seq_get(args, 0),
             expression=seq_get(args, 1),
             case_insensitive=True,
+            integer_scale=True,
         ),
         "MD5_HEX": exp.MD5.from_arg_list,
         "MD5_BINARY": exp.MD5Digest.from_arg_list,
@@ -712,6 +714,10 @@ class SnowflakeParser(parser.Parser):
             delimiter=seq_get(args, 1) or exp.Literal.string(" "),
             part_index=seq_get(args, 2) or exp.Literal.number("1"),
         ),
+        "STRTOK_TO_ARRAY": lambda args: exp.StrtokToArray(
+            this=seq_get(args, 0),
+            expression=seq_get(args, 1) or exp.Literal.string(" "),
+        ),
         "SYSTIMESTAMP": exp.CurrentTimestamp.from_arg_list,
         "UNICODE": lambda args: exp.Unicode(this=seq_get(args, 0), empty_is_zero=True),
         "WEEKISO": exp.WeekOfYear.from_arg_list,
@@ -726,6 +732,7 @@ class SnowflakeParser(parser.Parser):
         "OBJECT_CONSTRUCT_KEEP_NULL": lambda self: self._parse_json_object(),
         "LISTAGG": lambda self: self._parse_string_agg(),
         "SEMANTIC_VIEW": lambda self: self._parse_semantic_view(),
+        "SUBSTR": lambda self: self._parse_substring(),
     }
     FUNCTION_PARSERS = {k: v for k, v in FUNCTION_PARSERS.items() if k != "TRIM"}
 
@@ -1288,6 +1295,11 @@ class SnowflakeParser(parser.Parser):
     def _parse_position(self, haystack_first: bool = False) -> exp.StrPosition:
         result = super()._parse_position(haystack_first)
         result.set("clamp_position", True)
+        return result
+
+    def _parse_substring(self) -> exp.Substring:
+        result = super()._parse_substring()
+        result.set("zero_start", True)
         return result
 
     def _parse_window(self, this: exp.Expr | None, alias: bool = False) -> exp.Expr | None:
