@@ -3,6 +3,7 @@ from __future__ import annotations
 from sqlglot import tokens
 from sqlglot.dialects.dialect import Dialect
 from sqlglot.generators.db2 import Db2 as Db2Generator
+from sqlglot.tokens import TokenType
 
 
 class Db2(Dialect):
@@ -10,6 +11,13 @@ class Db2(Dialect):
     TYPED_DIVISION = True
 
     class Tokenizer(tokens.Tokenizer):
+        KEYWORDS = {
+            **tokens.Tokenizer.KEYWORDS,
+            "DBCLOB": TokenType.DBCLOB,
+            "GRAPHIC": TokenType.GRAPHIC,
+            "VARGRAPHIC": TokenType.VARGRAPHIC,
+        }
+
         VAR_SINGLE_TOKENS = {"@"}
 
     Generator = Db2Generator

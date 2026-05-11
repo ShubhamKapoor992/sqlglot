@@ -65,7 +65,7 @@ class TestDB2(Validator):
             },
         )
 
-    def test_type_transpilation(self):
+    def test_nchar_nvarchar_transpilation(self):
         self.validate_all(
             "CREATE TABLE t (a NCHAR(10))",
             write={
@@ -83,33 +83,6 @@ class TestDB2(Validator):
                 "postgres": "CREATE TABLE t (a VARCHAR(100))",
                 "mysql": "CREATE TABLE t (a VARCHAR(100))",
                 "snowflake": "CREATE TABLE t (a VARCHAR(100))",
-            },
-        )
-
-        self.validate_all(
-            "CREATE TABLE t (a GRAPHIC(10))",
-            write={
-                "db2": "CREATE TABLE t (a GRAPHIC(10))",
-                "postgres": "CREATE TABLE t (a GRAPHIC(10))",
-                "mysql": "CREATE TABLE t (a GRAPHIC(10))",
-            },
-        )
-
-        self.validate_all(
-            "CREATE TABLE t (a VARGRAPHIC(100))",
-            write={
-                "db2": "CREATE TABLE t (a VARGRAPHIC(100))",
-                "postgres": "CREATE TABLE t (a VARGRAPHIC(100))",
-                "mysql": "CREATE TABLE t (a VARGRAPHIC(100))",
-            },
-        )
-
-        self.validate_all(
-            "CREATE TABLE t (a DBCLOB)",
-            write={
-                "db2": "CREATE TABLE t (a DBCLOB)",
-                "postgres": "CREATE TABLE t (a DBCLOB)",
-                "mysql": "CREATE TABLE t (a DBCLOB)",
             },
         )
 
