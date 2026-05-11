@@ -446,6 +446,9 @@ class Generator:
     # Whether named columns are allowed in table aliases
     SUPPORTS_TABLE_ALIAS_COLUMNS = True
 
+    # Whether named columns are allowed in CTE definitions
+    SUPPORTS_NAMED_CTE_COLUMNS = True
+
     # Whether UNPIVOT aliases are Identifiers (False means they're Literals)
     UNPIVOT_ALIASES_ARE_IDENTIFIERS = True
 
@@ -463,6 +466,9 @@ class Generator:
 
     # Whether the CREATE TABLE LIKE statement is supported
     SUPPORTS_CREATE_TABLE_LIKE = True
+
+    # Whether ALTER TABLE ... MODIFY COLUMN column-redefinition syntax is supported
+    SUPPORTS_MODIFY_COLUMN = False
 
     # Whether the LikeProperty needs to be specified inside of the schema clause
     LIKE_PROPERTY_INSIDE_SCHEMA = False
@@ -616,6 +622,11 @@ class Generator:
     }
 
     UNSUPPORTED_TYPES: t.ClassVar[set[exp.DType]] = set()
+
+    # mapping of DType to its default parameters, bounds
+    TYPE_PARAM_SETTINGS: t.ClassVar[
+        dict[exp.DType, tuple[tuple[int, ...], tuple[int | None, ...]]]
+    ] = {}
 
     TIME_PART_SINGULARS: t.ClassVar = {
         "MICROSECONDS": "MICROSECOND",
@@ -1523,7 +1534,11 @@ class Generator:
         columns = self.expressions(expression, key="columns", flat=True)
         columns = f"({columns})" if columns else ""
 
-        if columns and not self.SUPPORTS_TABLE_ALIAS_COLUMNS:
+        if (
+            columns
+            and not self.SUPPORTS_TABLE_ALIAS_COLUMNS
+            and not (self.SUPPORTS_NAMED_CTE_COLUMNS and isinstance(expression.parent, exp.CTE))
+        ):
             columns = ""
             self.unsupported("Named columns are not supported in table alias.")
 
@@ -1626,11 +1641,59 @@ class Generator:
         specifier = f" {specifier}" if specifier and self.DATA_TYPE_SPECIFIERS_ALLOWED else ""
         return f"{this}{specifier}"
 
+    def datatype_param_bound_limiter(
+        self,
+        expression: exp.DataType,
+        type_value: exp.DType,
+        defaults: tuple[int, ...],
+        bounds: tuple[int | None, ...],
+    ) -> exp.DataType:
+        params = expression.expressions
+
+        if not params:
+            if defaults:
+                expression.set(
+                    "expressions",
+                    [exp.DataTypeParam(this=exp.Literal.number(d)) for d in defaults],
+                )
+            return expression
+
+        if not bounds:
+            return expression
+
+        for i, param in enumerate(params):
+            bound = bounds[i] if i < len(bounds) else None
+            if bound is None:
+                continue
+
+            param_value = param.this if isinstance(param, exp.DataTypeParam) else param
+            if (
+                isinstance(param_value, exp.Literal)
+                and param_value.is_number
+                and int(param_value.to_py()) > bound
+            ):
+                self.unsupported(
+                    f"{type_value.value} parameter {param_value.name} exceeds "
+                    f"{self.dialect.__class__.__name__}'s maximum of {bound}; capping"
+                )
+                params[i] = exp.DataTypeParam(this=exp.Literal.number(bound))
+
+        return expression
+
     def datatype_sql(self, expression: exp.DataType) -> str:
         nested = ""
         values = ""
 
         expr_nested = expression.args.get("nested")
+        type_value = expression.this
+
+        if (
+            not expr_nested
+            and isinstance(type_value, exp.DType)
+            and (settings := self.TYPE_PARAM_SETTINGS.get(type_value))
+        ):
+            expression = self.datatype_param_bound_limiter(expression, type_value, *settings)
+
         interior = (
             self.expressions(
                 expression, dynamic=True, new_line=True, skip_first=True, skip_last=True
@@ -1639,7 +1702,6 @@ class Generator:
             else self.expressions(expression, flat=True)
         )
 
-        type_value = expression.this
         if type_value in self.UNSUPPORTED_TYPES:
             self.unsupported(
                 f"Data type {type_value.value} is not supported when targeting {self.dialect.__class__.__name__}"
@@ -1685,6 +1747,7 @@ class Generator:
         return f"{local}DIRECTORY {self.sql(expression, 'this')}{row_format}"
 
     def delete_sql(self, expression: exp.Delete) -> str:
+        hint = self.sql(expression, "hint")
         this = self.sql(expression, "this")
         this = f" FROM {this}" if this else ""
         using = self.expressions(expression, key="using")
@@ -1701,7 +1764,7 @@ class Generator:
             expression_sql = f"{this}{using}{cluster}{where}{returning}{order}{limit}"
         else:
             expression_sql = f"{returning}{this}{using}{cluster}{where}{order}{limit}"
-        return self.prepend_ctes(expression, f"DELETE{tables}{expression_sql}")
+        return self.prepend_ctes(expression, f"DELETE{hint}{tables}{expression_sql}")
 
     def drop_sql(self, expression: exp.Drop) -> str:
         this = self.sql(expression, "this")
@@ -1879,7 +1942,9 @@ class Generator:
             or lower in self.RESERVED_KEYWORDS
             or (not self.dialect.IDENTIFIERS_CAN_START_WITH_DIGIT and text[:1].isdigit())
         ):
-            text = f"{self._identifier_start}{text}{self._identifier_end}"
+            text = (
+                f"{self._identifier_start}{self._replace_line_breaks(text)}{self._identifier_end}"
+            )
         return text
 
     def hex_sql(self, expression: exp.Hex) -> str:
@@ -2467,6 +2532,7 @@ class Generator:
         return (join_sql, "")
 
     def update_sql(self, expression: exp.Update) -> str:
+        hint = self.sql(expression, "hint")
         this = self.sql(expression, "this")
         join_sql, from_sql = self._update_from_joins_sql(expression)
         set_sql = self.expressions(expression, flat=True)
@@ -2480,7 +2546,7 @@ class Generator:
             expression_sql = f"{returning}{from_sql}{where_sql}"
         options = self.expressions(expression, key="options")
         options = f" OPTION({options})" if options else ""
-        sql = f"UPDATE {this}{join_sql} SET {set_sql}{expression_sql}{order}{limit}{options}"
+        sql = f"UPDATE{hint} {this}{join_sql} SET {set_sql}{expression_sql}{order}{limit}{options}"
         return self.prepend_ctes(expression, sql)
 
     def values_sql(self, expression: exp.Values, values_as_table: bool = True) -> str:
@@ -3199,6 +3265,7 @@ class Generator:
         if self.UNNEST_WITH_ORDINALITY:
             if alias and isinstance(offset, exp.Expr):
                 alias.append("columns", offset)
+                expression.set("offset", None)
 
         if alias and self.dialect.UNNEST_COLUMN_ONLY:
             columns = alias.columns
@@ -3395,7 +3462,13 @@ class Generator:
         if self.dialect.STRICT_STRING_CONCAT and expression.args.get("safe"):
             args = [exp.cast(e, exp.DType.TEXT) for e in args]
 
-        if not self.dialect.CONCAT_COALESCE and expression.args.get("coalesce"):
+        concat_coalesce = (
+            self.dialect.CONCAT_WS_COALESCE
+            if isinstance(expression, exp.ConcatWs)
+            else self.dialect.CONCAT_COALESCE
+        )
+
+        if not concat_coalesce and expression.args.get("coalesce"):
 
             def _wrap_with_coalesce(e: exp.Expr) -> exp.Expr:
                 if not e.type:
@@ -3430,8 +3503,8 @@ class Generator:
         return self.func("CONCAT", *expressions)
 
     def concatws_sql(self, expression: exp.ConcatWs) -> str:
-        if self.dialect.CONCAT_COALESCE and not expression.args.get("coalesce"):
-            # Dialect's CONCAT_WS function coalesces NULLs to empty strings, but the expression does not.
+        if self.dialect.CONCAT_WS_COALESCE and not expression.args.get("coalesce"):
+            # Dialect's CONCAT_WS function skips NULL args, but the expression does not.
             # Wrap the entire call in a CASE expression that returns NULL if any input IS NULL.
             all_args = expression.expressions
             expression.set("coalesce", True)
@@ -3597,9 +3670,10 @@ class Generator:
         this = self.sql(expression, "this")
         kind = self.sql(expression, "kind")
         kind = f" {kind}" if kind else ""
+        format_json = " FORMAT JSON" if expression.args.get("format_json") else ""
 
         ordinality = " FOR ORDINALITY" if expression.args.get("ordinality") else ""
-        return f"{this}{kind}{path}{ordinality}"
+        return f"{this}{kind}{format_json}{path}{ordinality}"
 
     def jsonschema_sql(self, expression: exp.JSONSchema) -> str:
         return self.func("COLUMNS", *expression.expressions)
@@ -3928,6 +4002,11 @@ class Generator:
 
         return f"ALTER COLUMN {this} DROP DEFAULT"
 
+    def modifycolumn_sql(self, expression: exp.ModifyColumn) -> str:
+        if not self.SUPPORTS_MODIFY_COLUMN:
+            self.unsupported("MODIFY COLUMN is not supported in this dialect")
+        return f"MODIFY COLUMN {self.sql(expression, 'this')}"
+
     def alterindex_sql(self, expression: exp.AlterIndex) -> str:
         this = self.sql(expression, "this")
 
@@ -4038,6 +4117,9 @@ class Generator:
         expressions = self.expressions(expression)
         exists = " IF EXISTS " if expression.args.get("exists") else " "
         return f"DROP{exists}{expressions}"
+
+    def dropprimarykey_sql(self, expression: exp.DropPrimaryKey) -> str:
+        return "DROP PRIMARY KEY"
 
     def addconstraint_sql(self, expression: exp.AddConstraint) -> str:
         return f"ADD {self.expressions(expression, indent=False)}"
@@ -4170,6 +4252,9 @@ class Generator:
             exp_class = exp.ILike
             op = "ILIKE"
 
+        if expression.args.get("negate"):
+            op = f"NOT {op}"
+
         if isinstance(rhs, (exp.All, exp.Any)) and not self.SUPPORTS_LIKE_QUANTIFIERS:
             exprs = rhs.this.unnest()
 
@@ -4181,7 +4266,9 @@ class Generator:
             connective = exp.or_ if isinstance(rhs, exp.Any) else exp.and_
 
             def _make_like(expr: exp.Expression) -> exp.Expression:
-                like: exp.Expression = exp_class(this=this, expression=expr)
+                like: exp.Expression = exp_class(
+                    this=this, expression=expr, negate=expression.args.get("negate")
+                )
                 if escape:
                     like = exp.Escape(this=like, expression=escape.expression.copy())
                 return like
@@ -5920,3 +6007,8 @@ class Generator:
     def usingproperty_sql(self, expression: exp.UsingProperty) -> str:
         kind = expression.args.get("kind")
         return f"USING {kind} {self.sql(expression, 'this')}"
+
+    def renameindex_sql(self, expression: exp.RenameIndex) -> str:
+        this = self.sql(expression, "this")
+        to = self.sql(expression, "to")
+        return f"RENAME INDEX {this} TO {to}"

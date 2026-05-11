@@ -91,6 +91,12 @@ BIGINT;
 LAST_VALUE(tbl.bigint_col) OVER (ORDER BY tbl.bigint_col);
 BIGINT;
 
+FIRST_VALUE(tbl.bigint_col) OVER (ORDER BY tbl.bigint_col);
+BIGINT;
+
+FIRST_VALUE(tbl.str_col) OVER (ORDER BY tbl.str_col);
+TEXT;
+
 TO_BASE32(tbl.bytes_col);
 VARCHAR;
 
@@ -198,6 +204,30 @@ STRING;
 # dialect: spark2, spark, databricks
 SUBSTRING(tbl.bin_col, 0, 0);
 BINARY;
+
+# dialect: hive, spark2, spark, databricks
+FIRST(tbl.str_col);
+TEXT;
+
+# dialect: hive, spark2, spark, databricks
+FIRST(tbl.bigint_col);
+BIGINT;
+
+# dialect: hive, spark2, spark, databricks
+LAST(tbl.str_col);
+TEXT;
+
+# dialect: hive, spark2, spark, databricks
+LAST(tbl.bigint_col);
+BIGINT;
+
+# dialect: spark2, spark, databricks
+REGEXP_EXTRACT(tbl.str_col, pattern, 0);
+STRING;
+
+# dialect: spark2, spark, databricks
+REGEXP_EXTRACT(tbl.bin_col, pattern, 0);
+STRING;
 
 # dialect: spark2, spark, databricks
 CONCAT(tbl.bin_col, tbl.bin_col);
@@ -374,6 +404,22 @@ BINARY;
 # dialect: spark, databricks
 LOCALTIMESTAMP();
 TIMESTAMPNTZ;
+
+# dialect: spark, databricks
+DATE_ADD(tbl.date_col, 1);
+DATE;
+
+# dialect: spark, databricks
+DATE_ADD(tbl.timestamp_col, 1);
+DATE;
+
+# dialect: spark, databricks
+DATE_ADD(MONTH, 1, tbl.date_col);
+TIMESTAMP;
+
+# dialect: spark, databricks
+DATE_ADD(MONTH, 1, tbl.timestamp_col);
+TIMESTAMP;
 
 # dialect: hive, spark2, spark, databricks
 ENCODE(tbl.str_col, tbl.str_col);
@@ -2374,6 +2420,10 @@ BIGINT;
 # dialect: snowflake
 ABS(tbl.bigint_col);
 BIGINT;
+
+# dialect: snowflake
+REGEXP_SUBSTR(tbl.str_col, pattern, 1);
+VARCHAR;
 
 # dialect: snowflake
 ABS(tbl.double_col);
@@ -6318,3 +6368,11 @@ BIGINT;
 # dialect: trino
 ARRAY_FIRST(ARRAY['a', 'b'], x -> x = 'b');
 VARCHAR;
+
+--------------------------------------
+-- Clickhouse
+--------------------------------------
+
+# dialect: clickhouse
+MD5(tbl.str_col);
+FIXEDSTRING(16);

@@ -202,6 +202,10 @@ class TestBigQuery(Validator):
         self.validate_identity("BEGIN DECLARE y INT64", check_command_warning=True)
         self.validate_identity("LOOP SET x = x + 1", check_command_warning=True)
         self.validate_identity("REPEAT SET x = x + 1", check_command_warning=True)
+        self.validate_identity(
+            "ALTER TABLE foo DROP PRIMARY KEY IF EXISTS",
+            check_command_warning=True,
+        )
         self.validate_identity("SELECT MAKE_INTERVAL(100, 11, 1, 12, 30, 10)")
         self.validate_identity(
             "WHILE i < ARRAY_LENGTH(batches) DO SET x = batches[OFFSET(i)]",
@@ -3817,6 +3821,22 @@ OPTIONS (
                     write={
                         "bigquery": "SELECT CAST('1' AS BIGNUMERIC)",
                         "duckdb": "SELECT CAST('1' AS DECIMAL(38, 5))",
+                    },
+                )
+
+                self.validate_all(
+                    f"DECLARE x {type_}(20, 4)",
+                    write={
+                        "bigquery": "DECLARE x BIGNUMERIC(20, 4)",
+                        "duckdb": "DECLARE x DECIMAL(20, 4)",
+                    },
+                )
+
+                self.validate_all(
+                    f"DECLARE x {type_}(76, 38)",
+                    write={
+                        "bigquery": "DECLARE x BIGNUMERIC(76, 38)",
+                        "duckdb": "DECLARE x DECIMAL(38, 38)",
                     },
                 )
 

@@ -270,6 +270,42 @@ class RedshiftGenerator(PostgresGenerator):
         "without",
     }
 
+    def stpoint_sql(self, expression: exp.StPoint) -> str:
+        # ST_POINT only accepts 2 args in Redshift; use ST_MAKEPOINT for 3 or 4 args
+        if expression.args.get("z") or expression.args.get("m"):
+            return self.func(
+                "ST_MAKEPOINT",
+                expression.this,
+                expression.expression,
+                expression.args.get("z"),
+                expression.args.get("m"),
+            )
+        return self.func("ST_POINT", expression.this, expression.expression)
+
+    def arraycontains_sql(self, expression: exp.ArrayContains) -> str:
+        return self.func(
+            "ARRAY_CONTAINS",
+            expression.this,
+            expression.expression,
+            expression.args.get("check_null"),
+        )
+
+    def objecttransform_sql(self, expression: exp.ObjectTransform) -> str:
+        this = self.sql(expression, "this")
+        keep = self.expressions(expression, key="keep", flat=True)
+        set_ = self.expressions(expression, key="set_", flat=True)
+        keep_sql = " KEEP " + keep if keep else ""
+        set_sql = " SET " + set_ if set_ else ""
+        return f"OBJECT_TRANSFORM({this}{keep_sql}{set_sql})"
+
+    def approxquantile_sql(self, expression: exp.ApproxQuantile) -> str:
+        return "APPROXIMATE " + self.sql(
+            exp.WithinGroup(
+                this=exp.PercentileDisc(this=expression.args["quantile"]),
+                expression=exp.Order(expressions=[exp.Ordered(this=expression.this)]),
+            )
+        )
+
     def unnest_sql(self, expression: exp.Unnest) -> str:
         args = expression.expressions
         num_args = len(args)

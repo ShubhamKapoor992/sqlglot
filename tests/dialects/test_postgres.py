@@ -91,6 +91,16 @@ class TestPostgres(Validator):
         self.validate_identity("SELECT INTERVAL '2.5 MONTH'")
         self.validate_identity("SELECT INTERVAL '-10.75 MINUTE'")
         self.validate_identity("SELECT INTERVAL '0.123456789 SECOND'")
+        self.validate_identity("SELECT date_col - INTERVAL '30' FROM t")
+        self.validate_identity("SELECT date_col - INTERVAL '1' AS one_second_later")
+        self.validate_identity(
+            "SELECT date_col - INTERVAL '30' DAY FROM t",
+            "SELECT date_col - INTERVAL '30 DAY' FROM t",
+        )
+        self.validate_identity(
+            "SELECT date_col - INTERVAL '1' HOUR AS one_hour_later",
+            "SELECT date_col - INTERVAL '1 HOUR' AS one_hour_later",
+        )
         self.validate_identity(
             "SELECT SUM(x) OVER (PARTITION BY y ORDER BY interval ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) - SUM(x) OVER (PARTITION BY y ORDER BY interval ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS total"
         )
@@ -251,12 +261,26 @@ class TestPostgres(Validator):
         )
         self.validate_identity(
             "x !~~ 'y'",
-            "NOT x LIKE 'y'",
+            "x NOT LIKE 'y'",
         )
         self.validate_identity(
             "x !~~* 'y'",
-            "NOT x ILIKE 'y'",
+            "x NOT ILIKE 'y'",
         )
+        self.validate_identity("SELECT 'testa 1' NOT LIKE ALL (ARRAY['testa%', 'testb%'])")
+        self.validate_identity("SELECT 'testa 1' NOT LIKE ANY(ARRAY['testa%', 'testb%'])")
+        self.validate_identity("SELECT 'testa 1' NOT ILIKE ALL (ARRAY['testa%', 'testb%'])")
+        self.validate_identity("SELECT 'testa 1' NOT ILIKE ANY(ARRAY['testa%', 'testb%'])")
+        self.validate_identity("SELECT NOT 'testa 1' LIKE ALL (ARRAY['testa%', 'testb%'])")
+        self.validate_identity("SELECT NOT ('testa 1' LIKE ALL (ARRAY['testa%', 'testb%']))")
+        infix_not_like = self.parse_one("SELECT a NOT LIKE ALL (b)").expressions[0]
+        prefix_not_like = self.parse_one("SELECT NOT a LIKE ALL (b)").expressions[0]
+        self.assertIsInstance(infix_not_like, exp.Like)
+        self.assertTrue(infix_not_like.args.get("negate"))
+        self.assertIsInstance(prefix_not_like, exp.Not)
+        self.assertIsInstance(prefix_not_like.this, exp.Like)
+        self.assertFalse(prefix_not_like.this.args.get("negate"))
+        self.assertNotEqual(infix_not_like, prefix_not_like)
         self.validate_identity(
             "'45 days'::interval day",
             "CAST('45 days' AS INTERVAL DAY)",
@@ -1066,6 +1090,28 @@ FROM json_data, field_ids""",
             exp.DataType
         )
 
+        create_type = self.validate_identity(
+            "CREATE TYPE mood AS ENUM ('sad', 'ok', 'happy')"
+        ).assert_is(exp.Create)
+        self.assertTrue(create_type.expression.assert_is(exp.DataType).is_type(exp.DType.ENUM))
+
+        self.validate_identity("CREATE TYPE mood AS ENUM ()").assert_is(exp.Create)
+
+        create_type = self.validate_identity(
+            "CREATE TYPE inventory_item AS (name TEXT, supplier_id INT, price DECIMAL)"
+        ).assert_is(exp.Create)
+        create_type.expression.assert_is(exp.Schema)
+
+        self.validate_identity("CREATE TYPE public.mood AS ENUM ('sad', 'ok')").assert_is(
+            exp.Create
+        )
+
+        self.validate_identity("CREATE TYPE widget", check_command_warning=True)
+        self.validate_identity(
+            "CREATE TYPE float8range AS RANGE (subtype = float8, subtype_diff = float8mi)",
+            check_command_warning=True,
+        )
+
         # Checks that OID is parsed into a DataType (ObjectIdentifier)
         self.assertIsInstance(
             self.parse_one("CREATE TABLE p.t (c oid)").find(exp.DataType), exp.ObjectIdentifier
@@ -1379,6 +1425,9 @@ FROM json_data, field_ids""",
     def test_unnest(self):
         self.validate_identity(
             "SELECT * FROM UNNEST(ARRAY[1, 2], ARRAY['foo', 'bar', 'baz']) AS x(a, b)"
+        )
+        self.validate_identity(
+            "SELECT TRIM(ARRAY_TO_STRING(ARRAY(SELECT val FROM UNNEST(ARRAY['a', 'b']) WITH ORDINALITY AS u(val, rn)), ' '))"
         )
 
         self.validate_all(
@@ -1815,6 +1864,8 @@ CROSS JOIN JSON_ARRAY_ELEMENTS(CAST(JSON_EXTRACT_PATH(tbox, 'boxes') AS JSON)) A
             "CREATE OR REPLACE TRIGGER replace_trigger BEFORE INSERT ON users FOR EACH ROW EXECUTE FUNCTION LOG_INSERT()",
             "CREATE TRIGGER param_trigger BEFORE INSERT ON users FOR EACH ROW EXECUTE FUNCTION LOG_WITH_PARAMS('insert', 'users')",
             "CREATE TRIGGER my_trigger BEFORE INSERT ON myschema.users FOR EACH ROW EXECUTE FUNCTION LOG_CHANGES()",
+            "CREATE TRIGGER trg_foo BEFORE UPDATE ON bar.bat FOR EACH ROW EXECUTE FUNCTION baz.asdf()",
+            "CREATE TRIGGER trg_foo BEFORE UPDATE ON bar.bat FOR EACH ROW EXECUTE FUNCTION c.s.asdf('x', 1)",
             "CREATE TRIGGER truncate_trigger BEFORE TRUNCATE ON users FOR EACH STATEMENT EXECUTE FUNCTION LOG_TRUNCATE()",
             "CREATE TRIGGER complex_when BEFORE UPDATE ON accounts FOR EACH ROW WHEN (OLD.balance IS DISTINCT FROM NEW.balance AND NEW.balance > 0) EXECUTE FUNCTION CHECK_BALANCE()",
             "CREATE TRIGGER emp_stamp BEFORE INSERT OR UPDATE ON emp FOR EACH ROW EXECUTE FUNCTION EMP_STAMP()",
